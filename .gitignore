@@ -1,0 +1,11 @@
+xelab.pb
+xvlog.pb
+xsim.dir
+.vscode
+vivado
+build/
+*.vcd
+*.vvp
+*.wdb
+*.log
+obj_dir/
