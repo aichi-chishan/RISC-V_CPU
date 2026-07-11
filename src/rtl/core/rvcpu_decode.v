@@ -64,6 +64,14 @@ module rvcpu_decode (
             // ADD/SUB、SRL/SRA 两对例外分别还允许 0100000。
             //----------------------------------------------------------------------
             7'b0110011: begin
+                if (funct7 == 7'b0000001) begin
+                    dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_MULDIV;
+                    dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                    dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                    dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                    dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                    dec_info[`RVC_DECINFO_MDU_OP] = funct3;
+                end else begin
                 case (funct3)
                     3'b000: begin
                         if (funct7 == 7'b0000000 || funct7 == 7'b0100000) begin
@@ -141,6 +149,7 @@ module rvcpu_decode (
                     end
                     default: begin end
                 endcase
+                end
             end
 
             //----------------------------------------------------------------------

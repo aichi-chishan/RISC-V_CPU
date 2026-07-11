@@ -81,8 +81,7 @@
 `define RVC_DECINFO_GRP_LSU        3'd1    // Load / Store 指令
 `define RVC_DECINFO_GRP_BJP        3'd2    // Branch / Jump 指令
 `define RVC_DECINFO_GRP_SYS        3'd3    // ECALL / EBREAK / FENCE / MRET(Phase4)
-// Phase 4: GRP_CSR  3'd4   CSR 指令
-// Phase 4: GRP_MULDIV 3'd5 乘除指令
+`define RVC_DECINFO_GRP_MULDIV     3'd5    // 标准 RV32M 乘除法
 
 //--------------------------------------------------------------------------
 // 4.2 通用字段位域 — dec_info 的低位部分，所有指令共享
@@ -325,6 +324,14 @@
 
 `define RVC_DECINFO_SYS_WIDTH      (`RVC_DECINFO_SYS_CSR_IMM_MSB + 1)
 
+//--------------------------------------------------------------------------
+// 4.7 MULDIV 组子字段：funct3 本身就是八种 RV32M 操作的标准编码。
+//--------------------------------------------------------------------------
+`define RVC_DECINFO_MDU_OP_LSB     `RVC_DECINFO_SUB_LSB
+`define RVC_DECINFO_MDU_OP_MSB     (`RVC_DECINFO_MDU_OP_LSB + 2)
+`define RVC_DECINFO_MDU_OP         `RVC_DECINFO_MDU_OP_MSB : `RVC_DECINFO_MDU_OP_LSB
+`define RVC_DECINFO_MDU_WIDTH      (`RVC_DECINFO_MDU_OP_MSB + 1)
+
 // Machine 模式异常编号，数值遵循 RISC-V Privileged Architecture。
 `define RVC_CAUSE_INST_MISALIGN 32'd0
 `define RVC_CAUSE_INST_ACCESS   32'd1
@@ -353,18 +360,21 @@
 `define RVC_DECINFO_LSU_SUB_WIDTH    (`RVC_DECINFO_LSU_WIDTH - `RVC_DECINFO_SUB_LSB)
 `define RVC_DECINFO_BJP_SUB_WIDTH    (`RVC_DECINFO_BJP_WIDTH - `RVC_DECINFO_SUB_LSB)
 `define RVC_DECINFO_SYS_SUB_WIDTH    (`RVC_DECINFO_SYS_WIDTH - `RVC_DECINFO_SUB_LSB)
+`define RVC_DECINFO_MDU_SUB_WIDTH    (`RVC_DECINFO_MDU_WIDTH - `RVC_DECINFO_SUB_LSB)
 
 // 各组总宽度 = 子字段起始位 + 该组子字段宽度
 `define RVC_DECINFO_ALU_TOTAL_WIDTH  (`RVC_DECINFO_SUB_LSB + `RVC_DECINFO_ALU_SUB_WIDTH)
 `define RVC_DECINFO_LSU_TOTAL_WIDTH  (`RVC_DECINFO_SUB_LSB + `RVC_DECINFO_LSU_SUB_WIDTH)
 `define RVC_DECINFO_BJP_TOTAL_WIDTH  (`RVC_DECINFO_SUB_LSB + `RVC_DECINFO_BJP_SUB_WIDTH)
 `define RVC_DECINFO_SYS_TOTAL_WIDTH  (`RVC_DECINFO_SUB_LSB + `RVC_DECINFO_SYS_SUB_WIDTH)
+`define RVC_DECINFO_MDU_TOTAL_WIDTH  (`RVC_DECINFO_SUB_LSB + `RVC_DECINFO_MDU_SUB_WIDTH)
 
 // 最终总线宽度 = max(各组总宽度)
 // 使用宏嵌套技巧: 逐级比较取最大值
 `define RVC_DECINFO_WIDTH_CAND_A  (`RVC_DECINFO_ALU_TOTAL_WIDTH > `RVC_DECINFO_LSU_TOTAL_WIDTH ? `RVC_DECINFO_ALU_TOTAL_WIDTH : `RVC_DECINFO_LSU_TOTAL_WIDTH)
 `define RVC_DECINFO_WIDTH_CAND_B  (`RVC_DECINFO_BJP_TOTAL_WIDTH > `RVC_DECINFO_SYS_TOTAL_WIDTH ? `RVC_DECINFO_BJP_TOTAL_WIDTH : `RVC_DECINFO_SYS_TOTAL_WIDTH)
-`define RVC_DECINFO_WIDTH         (`RVC_DECINFO_WIDTH_CAND_A > `RVC_DECINFO_WIDTH_CAND_B ? `RVC_DECINFO_WIDTH_CAND_A : `RVC_DECINFO_WIDTH_CAND_B)
+`define RVC_DECINFO_WIDTH_CAND_C  (`RVC_DECINFO_WIDTH_CAND_A > `RVC_DECINFO_WIDTH_CAND_B ? `RVC_DECINFO_WIDTH_CAND_A : `RVC_DECINFO_WIDTH_CAND_B)
+`define RVC_DECINFO_WIDTH         (`RVC_DECINFO_WIDTH_CAND_C > `RVC_DECINFO_MDU_TOTAL_WIDTH ? `RVC_DECINFO_WIDTH_CAND_C : `RVC_DECINFO_MDU_TOTAL_WIDTH)
 
 //==============================================================================
 // 五、多周期阶段宏 — 节拍计数器取值

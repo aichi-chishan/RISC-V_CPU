@@ -7,6 +7,7 @@ src/rtl/core/rvcpu_ex_stage.v
 src/rtl/core/rvcpu_mem_stage.v
 src/rtl/core/rvcpu_wb_stage.v
 src/rtl/core/rvcpu_csr_file.v
+src/rtl/core/rvcpu_mdu.v
 src/rtl/general/rvcpu_dff.v
 src/rtl/core/rvcpu_pipeline_reg.v
 src/rtl/core/rvcpu_hazard_unit.v
@@ -24,3 +25,4 @@ src/tb/rvcpu_pipeline_tb.v
 src/tb/rvcpu_icb_tb.v
 src/tb/rvcpu_trap_tb.v
 src/tb/rvcpu_soc_tb.v
+src/tb/rvcpu_rv32m_tb.v

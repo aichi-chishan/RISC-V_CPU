@@ -106,6 +106,9 @@ module rvcpu_core (
     wire [`RVC_DECINFO_WIDTH-1:0] ex_dec_info;
     wire [31:0] ex_alu_result, ex_store_data;
     wire [1:0] fwd_rs1_sel, fwd_rs2_sel;
+    wire [31:0] ex_rs1_forwarded, ex_rs2_forwarded;
+    wire mdu_busy, mdu_done;
+    wire [31:0] mdu_result;
 
     reg ex_mem_valid;
     reg [`RVC_DECINFO_WIDTH-1:0] ex_mem_dec_info;
@@ -134,6 +137,7 @@ module rvcpu_core (
     // 有效指令边界进入并保存该指令 PC，保证返回后从尚未执行的指令继续。
     // -------------------------------------------------------------------------
     wire ex_is_sys = id_ex_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_SYS;
+    wire ex_is_mdu = id_ex_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_MULDIV;
     wire ex_is_csr = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_CSR];
     wire ex_is_ecall = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_ECALL];
     wire ex_is_ebreak = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_EBREAK];
@@ -198,8 +202,10 @@ module rvcpu_core (
     wire mem_bus_exception = ex_mem_valid && mem_is_lsu && lsu_rsp_valid && lsu_rsp_err;
     wire [31:0] mem_exception_cause = mem_is_store ?
         `RVC_CAUSE_STORE_ACCESS : `RVC_CAUSE_LOAD_ACCESS;
-    wire ex_take_irq = id_ex_valid && !mem_bus_exception &&
-                       !ex_sync_exception && csr_irq_request;
+    // 多拍 MDU 被视为一条原子执行中的指令，中断等待 done 后再进入；同步异常
+    // 和更老的 MEM fault 仍可优先终止尚未启动的操作。
+    wire ex_take_irq = id_ex_valid && !mem_bus_exception && !ex_sync_exception &&
+                       (!ex_is_mdu || mdu_done) && csr_irq_request;
     wire ex_take_trap = ex_sync_exception || ex_take_irq;
     wire ex_take_mret = id_ex_valid && !mem_bus_exception && !ex_take_trap && ex_is_mret;
     wire ex_kill = ex_take_trap || ex_take_mret;
@@ -207,6 +213,9 @@ module rvcpu_core (
     wire control_redirect = any_trap || ex_take_mret || ex_mispredict;
     wire [31:0] control_target = any_trap ? csr_trap_vector :
                                  ex_take_mret ? csr_mret_pc : ex_actual_next;
+    wire mdu_start = id_ex_valid && ex_is_mdu && !mdu_busy && !mdu_done &&
+                     !mem_bus_exception && !ex_sync_exception && !csr_irq_request;
+    wire ex_wait_mdu = id_ex_valid && ex_is_mdu && !mdu_done && !any_trap;
 
     // -------------------------------------------------------------------------
     // MEM/WB：数据存储器访问与最终写回。
@@ -225,6 +234,10 @@ module rvcpu_core (
     wire wb_we;
     wire [4:0] wb_wa;
     wire [31:0] wb_wd;
+    assign ex_rs1_forwarded = (fwd_rs1_sel==2'b01) ? mem_forward_value :
+                              (fwd_rs1_sel==2'b10) ? wb_wd : id_ex_rs1;
+    assign ex_rs2_forwarded = (fwd_rs2_sel==2'b01) ? mem_forward_value :
+                              (fwd_rs2_sel==2'b10) ? wb_wd : id_ex_rs2;
 
     // ID 检测紧随 Load 的消费者；仅需停一拍。下一拍 Load 已到 MEM，消费者
     // 随后进入 EX 时可从 MEM/WB 前推已经扩展完成的读取结果。
@@ -268,9 +281,11 @@ module rvcpu_core (
             mem_wb_dec_info <= mem_dec_info;
             mem_wb_alu_result <= mem_alu_result;
             mem_wb_mem_result <= mem_mem_result;
-            ex_mem_valid <= id_ex_valid && !ex_kill && !mem_bus_exception;
+            ex_mem_valid <= id_ex_valid && !ex_kill && !mem_bus_exception &&
+                            (!ex_is_mdu || mdu_done);
             ex_mem_dec_info <= ex_dec_info;
-            ex_mem_alu_result <= ex_is_csr ? csr_rdata : ex_alu_result;
+            ex_mem_alu_result <= ex_is_csr ? csr_rdata :
+                                 ex_is_mdu ? mdu_result : ex_alu_result;
             ex_mem_store_data <= ex_store_data;
 
             if (if_is_branch || if_is_jal)
@@ -289,6 +304,12 @@ module rvcpu_core (
                 pc <= pc;
                 if_id_valid <= if_id_valid;
                 id_ex_valid <= 1'b0;
+            end else if (ex_wait_mdu) begin
+                // 长指令占据 EX 时冻结更年轻的 PC/IF/ID；MEM/WB 继续排空，
+                // 因而不会重复旧 Store 或寄存器写回。
+                pc <= pc;
+                if_id_valid <= if_id_valid;
+                id_ex_valid <= id_ex_valid;
             end else begin
                 pc <= if_pred_next;
                 if_id_valid <= 1'b1;
@@ -342,6 +363,12 @@ module rvcpu_core (
         .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
         .irq_request(csr_irq_request), .irq_cause(csr_irq_cause),
         .trap_vector(csr_trap_vector), .mret_pc(csr_mret_pc));
+
+    rvcpu_mdu u_mdu(
+        .clk(clk),.rst_n(rst_n),.start(mdu_start),
+        .op(id_ex_dec_info[`RVC_DECINFO_MDU_OP]),
+        .a(ex_rs1_forwarded),.b(ex_rs2_forwarded),
+        .busy(mdu_busy),.done(mdu_done),.result(mdu_result));
 
     rvcpu_ex_stage u_ex_stage(
         .i_valid(id_ex_valid), .i_ready(), .i_dec_info(id_ex_dec_info),
