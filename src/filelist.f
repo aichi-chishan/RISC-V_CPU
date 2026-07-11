@@ -14,9 +14,13 @@ src/rtl/core/rvcpu_sequencer.v
 src/rtl/core/rvcpu_top.v
 src/rtl/mems/rvcpu_imem.v
 src/rtl/mems/rvcpu_dmem.v
+src/rtl/soc/rvcpu_gpio.v
+src/rtl/soc/rvcpu_uart.v
+src/rtl/soc/rvcpu_clint.v
 src/rtl/fpga/rvcpu_fpga_top.v
 src/tb/rvcpu_tb.v
 src/tb/rvcpu_rv32i_tb.v
 src/tb/rvcpu_pipeline_tb.v
 src/tb/rvcpu_icb_tb.v
 src/tb/rvcpu_trap_tb.v
+src/tb/rvcpu_soc_tb.v

@@ -209,10 +209,11 @@ module rvcpu_rv32i_tb;
     rvcpu_top #(.IMEM_INIT_FILE("")) u_dut (
         .clk(clk), .rst_n(rst_n),
         .irq_software(1'b0), .irq_timer(1'b0), .irq_external(1'b0),
+        .uart_rx(1'b1),
         .debug_pc(debug_pc), .debug_stage(debug_stage),
         .debug_wb_we(debug_wb_we), .debug_wb_rd(debug_wb_rd),
         .debug_wb_data(debug_wb_data),
-        .periph_led_we(), .periph_led_wdata()
+        .periph_led_we(), .periph_led_wdata(), .uart_tx()
     );
 
     // 指令程序在复位释放前准备完毕。未使用的指令空间填 NOP，避免 PC 异常

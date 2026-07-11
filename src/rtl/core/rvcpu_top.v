@@ -116,6 +116,8 @@ module rvcpu_core (
     wire mem_is_load = ex_mem_valid &&
                        (ex_mem_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_LSU) &&
                        ex_mem_dec_info[`RVC_DECINFO_LSU_LOAD];
+    wire mem_is_lsu = ex_mem_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_LSU;
+    wire mem_is_store = mem_is_lsu && ex_mem_dec_info[`RVC_DECINFO_LSU_STORE];
     wire [31:0] mem_forward_value =
         (ex_mem_dec_info[`RVC_DECINFO_WB_SEL] == `RVC_WB_SEL_PC4) ?
         (ex_mem_dec_info[`RVC_DECINFO_PC] + 32'd4) : ex_mem_alu_result;
@@ -161,7 +163,7 @@ module rvcpu_core (
     wire ex_sync_exception = id_ex_valid &&
         (id_ex_illegal || ex_csr_illegal || ex_is_ecall || ex_is_ebreak ||
          ex_inst_misalign || ((ex_load || ex_store) && !ex_addr_aligned) ||
-         id_ex_access_err || ((ex_load || ex_store) && lsu_rsp_err));
+         id_ex_access_err);
 
     reg [31:0] ex_exception_cause, ex_exception_tval;
     always @(*) begin
@@ -182,14 +184,8 @@ module rvcpu_core (
         end else if (ex_load && !ex_addr_aligned) begin
             ex_exception_cause = `RVC_CAUSE_LOAD_MISALIGN;
             ex_exception_tval = ex_alu_result;
-        end else if (ex_load && lsu_rsp_err) begin
-            ex_exception_cause = `RVC_CAUSE_LOAD_ACCESS;
-            ex_exception_tval = ex_alu_result;
         end else if (ex_store && !ex_addr_aligned) begin
             ex_exception_cause = `RVC_CAUSE_STORE_MISALIGN;
-            ex_exception_tval = ex_alu_result;
-        end else if (ex_store && lsu_rsp_err) begin
-            ex_exception_cause = `RVC_CAUSE_STORE_ACCESS;
             ex_exception_tval = ex_alu_result;
         end else if (ex_is_ecall) begin
             ex_exception_cause = `RVC_CAUSE_ECALL_M;
@@ -197,12 +193,19 @@ module rvcpu_core (
         end
     end
 
-    wire ex_take_irq = id_ex_valid && !ex_sync_exception && csr_irq_request;
+    // LSU 响应属于当前 MEM 指令，不能错误地归因给年轻一拍的 EX 指令。
+    // MEM fault 优先级高于 EX 的 CSR/异常/中断，并杀死所有年轻操作。
+    wire mem_bus_exception = ex_mem_valid && mem_is_lsu && lsu_rsp_valid && lsu_rsp_err;
+    wire [31:0] mem_exception_cause = mem_is_store ?
+        `RVC_CAUSE_STORE_ACCESS : `RVC_CAUSE_LOAD_ACCESS;
+    wire ex_take_irq = id_ex_valid && !mem_bus_exception &&
+                       !ex_sync_exception && csr_irq_request;
     wire ex_take_trap = ex_sync_exception || ex_take_irq;
-    wire ex_take_mret = id_ex_valid && !ex_take_trap && ex_is_mret;
+    wire ex_take_mret = id_ex_valid && !mem_bus_exception && !ex_take_trap && ex_is_mret;
     wire ex_kill = ex_take_trap || ex_take_mret;
-    wire control_redirect = ex_take_trap || ex_take_mret || ex_mispredict;
-    wire [31:0] control_target = ex_take_trap ? csr_trap_vector :
+    wire any_trap = mem_bus_exception || ex_take_trap;
+    wire control_redirect = any_trap || ex_take_mret || ex_mispredict;
+    wire [31:0] control_target = any_trap ? csr_trap_vector :
                                  ex_take_mret ? csr_mret_pc : ex_actual_next;
 
     // -------------------------------------------------------------------------
@@ -213,9 +216,6 @@ module rvcpu_core (
     wire [31:0] dmem_rdata = lsu_rsp_rdata;
     wire [3:0] dmem_wmask;
     wire dmem_wen;
-    wire led_sel = (ex_mem_alu_result == `RVC_LED_ADDR);
-    wire mem_is_lsu = ex_mem_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_LSU;
-    wire mem_is_store = mem_is_lsu && ex_mem_dec_info[`RVC_DECINFO_LSU_STORE];
     wire [`RVC_DECINFO_WIDTH-1:0] mem_dec_info;
     wire [31:0] mem_alu_result, mem_mem_result;
 
@@ -264,11 +264,11 @@ module rvcpu_core (
             load_stall_count <= 32'b0;
         end else begin
             // 较老阶段始终前进，不应被年轻指令的停顿或冲刷阻塞。
-            mem_wb_valid <= ex_mem_valid;
+            mem_wb_valid <= ex_mem_valid && !mem_bus_exception;
             mem_wb_dec_info <= mem_dec_info;
             mem_wb_alu_result <= mem_alu_result;
             mem_wb_mem_result <= mem_mem_result;
-            ex_mem_valid <= id_ex_valid && !ex_kill;
+            ex_mem_valid <= id_ex_valid && !ex_kill && !mem_bus_exception;
             ex_mem_dec_info <= ex_dec_info;
             ex_mem_alu_result <= ex_is_csr ? csr_rdata : ex_alu_result;
             ex_mem_store_data <= ex_store_data;
@@ -329,12 +329,15 @@ module rvcpu_core (
 
     rvcpu_csr_file u_csr_file(
         .clk(clk), .rst_n(rst_n), .csr_addr(ex_csr_addr), .csr_cmd(ex_csr_cmd),
-        .csr_write_intent(id_ex_valid && ex_csr_write_intent && !ex_take_trap),
+        .csr_write_intent(id_ex_valid && ex_csr_write_intent && !any_trap),
         .csr_wdata(ex_csr_operand), .csr_rdata(csr_rdata),
         .csr_addr_valid(csr_addr_valid), .csr_writable(csr_writable),
-        .trap_enter(ex_take_trap), .trap_epc(ex_pc),
-        .trap_cause(ex_take_irq ? csr_irq_cause : ex_exception_cause),
-        .trap_tval(ex_take_irq ? 32'b0 : ex_exception_tval),
+        .trap_enter(any_trap),
+        .trap_epc(mem_bus_exception ? ex_mem_dec_info[`RVC_DECINFO_PC] : ex_pc),
+        .trap_cause(mem_bus_exception ? mem_exception_cause :
+                    (ex_take_irq ? csr_irq_cause : ex_exception_cause)),
+        .trap_tval(mem_bus_exception ? ex_mem_alu_result :
+                   (ex_take_irq ? 32'b0 : ex_exception_tval)),
         .mret(ex_take_mret), .retire(mem_wb_valid),
         .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
         .irq_request(csr_irq_request), .irq_cause(csr_irq_cause),
@@ -371,8 +374,7 @@ module rvcpu_core (
     // Store 还必须通过 MEM 级的对齐检查；否则一个未对齐 Store 虽然不会拉高
     // 原 dmem_wen，却可能被接口包装层误认为合法命令并产生总线副作用。
     assign lsu_cmd_valid = ex_mem_valid && mem_is_lsu &&
-                           (!mem_is_store || dmem_wen) &&
-                           !(mem_is_store && led_sel);
+                           (!mem_is_store || dmem_wen);
     assign lsu_cmd_read  = !mem_is_store;
     assign lsu_cmd_addr  = ex_mem_alu_result;
     assign lsu_cmd_wdata = dmem_wdata;
@@ -385,8 +387,9 @@ module rvcpu_core (
     assign debug_wb_we = wb_we;
     assign debug_wb_rd = wb_wa;
     assign debug_wb_data = wb_wd;
-    assign periph_led_we = dmem_wen && led_sel;
-    assign periph_led_wdata = dmem_wdata;
+    // MMIO 已移到 SoC 包装层，核心不再私自截获任何物理地址。
+    assign periph_led_we = 1'b0;
+    assign periph_led_wdata = 32'b0;
 endmodule
 
 //==============================================================================
@@ -399,10 +402,12 @@ module rvcpu_top #(
 ) (
     input wire clk, input wire rst_n,
     input wire irq_software, input wire irq_timer, input wire irq_external,
+    input wire uart_rx,
     output wire [31:0] debug_pc, output wire [2:0] debug_stage,
     output wire debug_wb_we, output wire [4:0] debug_wb_rd,
     output wire [31:0] debug_wb_data,
-    output wire periph_led_we, output wire [31:0] periph_led_wdata
+    output wire periph_led_we, output wire [31:0] periph_led_wdata,
+    output wire uart_tx
 );
     wire ifu_cmd_valid, ifu_cmd_ready, ifu_rsp_valid, ifu_rsp_ready;
     wire [31:0] ifu_cmd_addr, ifu_rsp_rdata;
@@ -410,6 +415,19 @@ module rvcpu_top #(
     wire [31:0] lsu_cmd_addr, lsu_cmd_wdata, lsu_rsp_rdata;
     wire [3:0] lsu_cmd_wmask;
     wire lsu_rsp_valid, lsu_rsp_ready;
+    localparam [31:0] GPIO_BASE  = 32'h4000_0000;
+    localparam [31:0] UART_BASE  = 32'h4000_1000;
+    localparam [31:0] CLINT_BASE = 32'h0200_0000;
+    wire ram_sel   = lsu_cmd_addr < (`RVC_DMEM_DEPTH * 4);
+    wire gpio_sel  = (lsu_cmd_addr[31:12] == GPIO_BASE[31:12]);
+    wire uart_sel  = (lsu_cmd_addr[31:12] == UART_BASE[31:12]);
+    wire clint_sel = (lsu_cmd_addr[31:16] == CLINT_BASE[31:16]);
+    wire mapped_sel = ram_sel || gpio_sel || uart_sel || clint_sel;
+    wire bus_write = lsu_cmd_valid && lsu_cmd_ready && !lsu_cmd_read;
+    wire [31:0] ram_rdata, gpio_rdata, uart_rdata, clint_rdata;
+    wire [31:0] gpio_out, gpio_oe;
+    wire gpio_write_pulse;
+    wire clint_irq_software, clint_irq_timer;
 
     // 零等待 ROM：命令握手的同一周期给出响应。只在边界处把字节地址
     // 转换为存储宏所需的字地址，核心内部地址语义保持一致。
@@ -418,18 +436,39 @@ module rvcpu_top #(
     rvcpu_imem #(.INIT_FILE(IMEM_INIT_FILE)) u_imem(
         .addr(ifu_cmd_addr[`RVC_IMEM_AW+1:2]), .rdata(ifu_rsp_rdata));
 
-    // 写副作用严格发生在 cmd_valid && cmd_ready 的握手周期。
+    // 单周期地址译码器。未映射地址返回 err，并在 MEM 提交边界产生精确异常。
     assign lsu_cmd_ready = 1'b1;
     assign lsu_rsp_valid = lsu_cmd_valid && lsu_cmd_ready;
+    assign lsu_rsp_rdata = ram_sel ? ram_rdata : gpio_sel ? gpio_rdata :
+                           uart_sel ? uart_rdata : clint_sel ? clint_rdata : 32'b0;
     rvcpu_dmem u_dmem(
         .clk(clk), .addr(lsu_cmd_addr[`RVC_DMEM_AW+1:2]),
         .wdata(lsu_cmd_wdata), .wmask(lsu_cmd_wmask),
-        .wen(lsu_cmd_valid && lsu_cmd_ready && !lsu_cmd_read),
-        .rdata(lsu_rsp_rdata));
+        .wen(bus_write && ram_sel), .rdata(ram_rdata));
+
+    rvcpu_gpio #(.WIDTH(32)) u_gpio(
+        .clk(clk),.rst_n(rst_n),.valid(lsu_cmd_valid && gpio_sel),
+        .write(bus_write),.addr(lsu_cmd_addr[3:0]),.wdata(lsu_cmd_wdata),
+        .wmask(lsu_cmd_wmask),.gpio_in(32'b0),.rdata(gpio_rdata),
+        .gpio_out(gpio_out),.gpio_oe(gpio_oe),.write_pulse(gpio_write_pulse));
+    rvcpu_uart u_uart(
+        .clk(clk),.rst_n(rst_n),.valid(lsu_cmd_valid && uart_sel),
+        .write(bus_write),.addr(lsu_cmd_addr[3:0]),.wdata(lsu_cmd_wdata),
+        .wmask(lsu_cmd_wmask),.rx(uart_rx),.rdata(uart_rdata),.tx(uart_tx),
+        .irq_tx_empty(),.irq_rx_valid());
+    rvcpu_clint u_clint(
+        .clk(clk),.rst_n(rst_n),.valid(lsu_cmd_valid && clint_sel),
+        .write(bus_write),.addr(lsu_cmd_addr[15:0]),.wdata(lsu_cmd_wdata),
+        .wmask(lsu_cmd_wmask),.rdata(clint_rdata),
+        .irq_software(clint_irq_software),.irq_timer(clint_irq_timer));
+
+    assign periph_led_we = gpio_write_pulse;
+    assign periph_led_wdata = gpio_out;
 
     rvcpu_core u_core(
         .clk(clk), .rst_n(rst_n),
-        .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
+        .irq_software(irq_software | clint_irq_software),
+        .irq_timer(irq_timer | clint_irq_timer), .irq_external(irq_external),
         .ifu_cmd_valid(ifu_cmd_valid), .ifu_cmd_ready(ifu_cmd_ready),
         .ifu_cmd_addr(ifu_cmd_addr), .ifu_rsp_valid(ifu_rsp_valid),
         .ifu_rsp_ready(ifu_rsp_ready), .ifu_rsp_rdata(ifu_rsp_rdata), .ifu_rsp_err(1'b0),
@@ -437,9 +476,9 @@ module rvcpu_top #(
         .lsu_cmd_read(lsu_cmd_read), .lsu_cmd_addr(lsu_cmd_addr),
         .lsu_cmd_wdata(lsu_cmd_wdata), .lsu_cmd_wmask(lsu_cmd_wmask),
         .lsu_rsp_valid(lsu_rsp_valid), .lsu_rsp_ready(lsu_rsp_ready),
-        .lsu_rsp_rdata(lsu_rsp_rdata), .lsu_rsp_err(1'b0),
+        .lsu_rsp_rdata(lsu_rsp_rdata), .lsu_rsp_err(lsu_rsp_valid && !mapped_sel),
         .debug_pc(debug_pc), .debug_stage(debug_stage),
         .debug_wb_we(debug_wb_we), .debug_wb_rd(debug_wb_rd),
-        .debug_wb_data(debug_wb_data), .periph_led_we(periph_led_we),
-        .periph_led_wdata(periph_led_wdata));
+        .debug_wb_data(debug_wb_data), .periph_led_we(),
+        .periph_led_wdata());
 endmodule

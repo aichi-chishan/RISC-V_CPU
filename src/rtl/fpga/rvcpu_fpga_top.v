@@ -12,7 +12,9 @@ module rvcpu_fpga_top #(
 ) (
     input  wire        sys_clk,
     input  wire        reset_n,
-    output wire [1:0]  led
+    input  wire        uart_rx,
+    output wire [1:0]  led,
+    output wire        uart_tx
 );
     // 异步复位同步释放：防止复位撤销边沿多个触发器进入不一致状态
     (* ASYNC_REG = "TRUE" *) reg [1:0] reset_sync;
@@ -52,12 +54,14 @@ module rvcpu_fpga_top #(
         .irq_software  (1'b0),
         .irq_timer     (1'b0),
         .irq_external  (1'b0),
+        .uart_rx       (uart_rx),
         .debug_pc      (debug_pc),
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),
         .debug_wb_rd   (debug_wb_rd),
         .debug_wb_data (debug_wb_data),
         .periph_led_we (core_led_we),
-        .periph_led_wdata(core_led_wdata)
+        .periph_led_wdata(core_led_wdata),
+        .uart_tx       (uart_tx)
     );
 endmodule
