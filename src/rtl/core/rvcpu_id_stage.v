@@ -12,9 +12,7 @@ module rvcpu_id_stage (
     input wire [`RVC_XLEN-1:0] wb_wd,
     output wire o_valid, input wire o_ready,
     output wire [`RVC_DECINFO_WIDTH-1:0] o_dec_info,
-    output wire [`RVC_XLEN-1:0] o_rs1, output wire [`RVC_XLEN-1:0] o_rs2,
-    output wire [`RVC_XLEN-1:0] o_imm,
-    output wire [`RVC_PC_WIDTH-1:0] o_pc, output wire [31:0] o_ir
+    output wire [`RVC_XLEN-1:0] o_rs1, output wire [`RVC_XLEN-1:0] o_rs2
 );
     wire [4:0] rs1_idx, rs2_idx;
     wire rs1_en, rs2_en;
@@ -28,9 +26,7 @@ module rvcpu_id_stage (
 
     assign i_ready = o_ready;
     assign o_valid = i_valid;
-    assign o_rs1 = rs1_en ? rs1_raw : 32'b0;
-    assign o_rs2 = rs2_en ? rs2_raw : 32'b0;
-    assign o_imm = o_dec_info[`RVC_DECINFO_IMM];
-    assign o_pc = i_pc;
-    assign o_ir = i_ir;
+    assign o_rs1 = rs1_en ? rs1_raw : 32'b0; // 减少数据线翻转，降低功耗
+    assign o_rs2 = rs2_en ? rs2_raw : 32'b0; // 减少数据线翻转，降低功耗
+    // imm 与 PC 已分别位于 dec_info 的公共字段中，不能再通过独立端口重复传递。
 endmodule

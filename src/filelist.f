@@ -6,6 +6,7 @@ src/rtl/core/rvcpu_id_stage.v
 src/rtl/core/rvcpu_ex_stage.v
 src/rtl/core/rvcpu_mem_stage.v
 src/rtl/core/rvcpu_wb_stage.v
+src/rtl/general/rvcpu_dff.v
 src/rtl/core/rvcpu_pipeline_reg.v
 src/rtl/core/rvcpu_hazard_unit.v
 src/rtl/core/rvcpu_sequencer.v

@@ -1,54 +1,81 @@
-//==============================================================================
-// Designer   : [你的名字]
-//
-// Description:
-//   rvcpu_dff.v — 通用 D 触发器库
-//
-// 用途:
-//   - 流水线寄存器 (Phase 2+)
-//   - 控制信号打拍
-//   - 同步化跨时钟域信号
-//
-// 建议的触发器类型:
-//   1. 基本 DFF : 最简单的触发器
-//   2. 带使能 DFF : en=1 时才更新
-//   3. 带复位 DFF : 同步/异步复位
-//   4. 多比特 DFF : 宽位宽数据 DFF
-//
-// Phase 1 可能不需要，但建议先建好，Phase 2 流水线会大量用到。
-//
-// 参考设计 (E203 general/sirv_gnrl_dffs.v):
-//   E203 有一个通用的 DFF 库，包含:
-//     - sirv_gnrl_dffl : 基本 DFF
-//     - sirv_gnrl_dffr : 带异步复位的 DFF
-//     - sirv_gnrl_dfflr : 带使能和异步复位的 DFF
-//     - sirv_gnrl_ltch : Latch (低功耗设计)
-//
-// 你的任务：
-//   Phase 1 留空或写一个简单的 DFF 模板即可
-//   Phase 2 再完善
-//==============================================================================
-
-`include "../core/defines.v"
+`timescale 1ns/1ps
 
 //==============================================================================
-// 示例：基本 DFF
-//==============================================================================
-// module rvcpu_dff (
-//     input  wire        clk,
-//     input  wire        d,
-//     output wire        q
-// );
-//     reg q_reg;
-//     always @(posedge clk) begin
-//         q_reg <= d;
-//     end
-//     assign q = q_reg;
-// endmodule
+// rvcpu_dff.v：通用 D 触发器库
 //
-// TODO: 根据你的需求添加:
-//   - rvcpu_dff_en    : 带使能的 DFF
-//   - rvcpu_dff_rst   : 带复位的 DFF
-//   - rvcpu_dff_bus   : 多比特版本的 DFF
+// 参考 E203 的 sirv_gnrl_dffs.v，将时序基本单元统一成四类常用形式：
+//   1. dffl   ：带时钟使能、无复位（只用于复位后无需定义值的数据路径）
+//   2. dffr   ：异步低有效复位、每拍更新
+//   3. dfflr  ：异步低有效复位 + 时钟使能，复位值为全 0
+//   4. dfflrs ：异步低有效复位 + 时钟使能，复位值为全 1
+//
+// 禁止在本文件加入 #delay；这样 RTL 行为与综合后的 FPGA/ASIC 一致。
+//==============================================================================
 
+// 带时钟使能、无复位的 DFF
+module rvcpu_dffl #(
+    parameter DW = 1
+) (
+    input wire clk,
+    input wire lden,
+    input wire [DW-1:0] dnxt,
+    output reg [DW-1:0] qout
+);
+    always @(posedge clk) begin
+        if (lden)
+            qout <= dnxt;
+    end
+endmodule
+
+// 每拍更新、异步低有效复位到全 0 的 DFF
+module rvcpu_dffr #(
+    parameter DW = 1
+) (
+    input wire clk,
+    input wire rst_n,
+    input wire [DW-1:0] dnxt,
+    output reg [DW-1:0] qout
+);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            qout <= {DW{1'b0}};
+        else
+            qout <= dnxt;
+    end
+endmodule
+
+// 带时钟使能、异步低有效复位到全 0 的 DFF：控制状态与流水寄存器默认使用该型。
+module rvcpu_dfflr #(
+    parameter DW = 1
+) (
+    input wire clk,
+    input wire rst_n,
+    input wire lden,
+    input wire [DW-1:0] dnxt,
+    output reg [DW-1:0] qout
+);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            qout <= {DW{1'b0}};
+        else if (lden)
+            qout <= dnxt;
+    end
+endmodule
+
+// 带时钟使能、异步低有效复位到全 1 的 DFF：适合 active-low 掩码等极性信号。
+module rvcpu_dfflrs #(
+    parameter DW = 1
+) (
+    input wire clk,
+    input wire rst_n,
+    input wire lden,
+    input wire [DW-1:0] dnxt,
+    output reg [DW-1:0] qout
+);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            qout <= {DW{1'b1}};
+        else if (lden)
+            qout <= dnxt;
+    end
 endmodule

@@ -16,13 +16,16 @@ set rtl_files [list \
     src/rtl/core/rvcpu_hazard_unit.v \
     src/rtl/core/rvcpu_sequencer.v \
     src/rtl/core/rvcpu_top.v \
+    src/rtl/general/rvcpu_dff.v \
     src/rtl/mems/rvcpu_imem.v \
     src/rtl/mems/rvcpu_dmem.v \
     src/rtl/fpga/rvcpu_fpga_top.v]
 
 read_verilog -sv $rtl_files
+read_xdc vivado/rvcpu_zynq7020.xdc
+set led_hex [file normalize src/riscv-tests/led_flow.hex]
 synth_design -top rvcpu_fpga_top -part xc7z020clg400-2 \
-    -generic IMEM_INIT_FILE=src/riscv-tests/smoke_test.hex
+    -generic IMEM_INIT_FILE=$led_hex
 report_utilization -file build/vivado_utilization.rpt
 report_timing_summary -file build/vivado_timing_summary.rpt
 puts "RVC_VIVADO_SYNTH_PASSED"

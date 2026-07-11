@@ -48,6 +48,9 @@
 `define RVC_DMEM_DEPTH     ((`RVC_CFG_DMEM_SIZE_KB * 1024) / 4)
 `define RVC_DMEM_AW        $clog2(`RVC_DMEM_DEPTH)
 
+// FPGA 外设地址。该地址由 rvcpu_top 译码，避免被低位截断后写入 DMEM。
+`define RVC_LED_ADDR       `RVC_CFG_LED_ADDR
+
 //==============================================================================
 // 四、译码信息总线 (dec_info) 位域定义
 //

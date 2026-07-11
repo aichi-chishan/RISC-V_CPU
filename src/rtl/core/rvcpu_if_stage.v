@@ -1,21 +1,27 @@
 `include "./defines.v"
 
-//==============================================================================
-// IF 阶段：维护 PC，并将字节地址转换成 IMEM 字地址。
-// stall 和跳转接口已保留；未来可在其后接弹性 IF/ID 寄存器，并把 IMEM
-// 替换为带握手的同步 BRAM、Cache 或片外总线。
-//==============================================================================
+// IF 阶段：维护 PC 并从指令存储器取指令
+//
+// PC 由 sequencer/顶层控制，stall 和 o_ready 预留供未来五级流水使用。
+// 地址转换：32 位字节地址 → IMEM 字地址（取高 [IMEM_AW+1:2] 位）。
 module rvcpu_if_stage (
     input wire clk, input wire rst_n,
-    output wire [`RVC_IMEM_AW-1:0] imem_addr, input wire [31:0] imem_rdata,
-    input wire ctrl_pc_sel, input wire [31:0] ctrl_pc_next, input wire stall,
-    output wire o_valid, input wire o_ready,
-    output wire [31:0] o_ir, output wire [31:0] o_pc
+    output wire [`RVC_IMEM_AW-1:0] imem_addr,    // IMEM 字地址
+    input wire [31:0] imem_rdata,                // 指令数据输入
+    input wire ctrl_pc_sel,                      // 1=跳转，0=顺序执行
+    input wire [31:0] ctrl_pc_next,              // 跳转目标地址
+    input wire stall,                            // 流水线暂停
+    output wire o_valid,                         // 输出有效
+    input wire o_ready,                          // 下游就绪
+    output wire [31:0] o_ir,                     // 输出指令
+    output wire [31:0] o_pc                      // 输出PC
 );
-    reg [31:0] pc_r;
+    reg [31:0] pc_r;                             // PC 寄存器
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) pc_r <= `RVC_RESET_PC;
-        else if (!stall && o_ready) pc_r <= ctrl_pc_sel ? ctrl_pc_next : pc_r + 32'd4;
+        if (!rst_n)
+            pc_r <= `RVC_RESET_PC;                                // 复位 PC = 0
+        else if (!stall && o_ready)                               // 未被暂停且下游就绪时更新
+            pc_r <= ctrl_pc_sel ? ctrl_pc_next : pc_r + 32'd4;    // 跳转或顺序+4
     end
     assign imem_addr = pc_r[`RVC_IMEM_AW+1:2];
     assign o_ir = imem_rdata;
