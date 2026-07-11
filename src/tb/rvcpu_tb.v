@@ -69,6 +69,9 @@ module rvcpu_tb;
     rvcpu_top u_dut (
         .clk           (clk),
         .rst_n         (rst_n),
+        .irq_software  (1'b0),
+        .irq_timer     (1'b0),
+        .irq_external  (1'b0),
         .debug_pc      (debug_pc),
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),

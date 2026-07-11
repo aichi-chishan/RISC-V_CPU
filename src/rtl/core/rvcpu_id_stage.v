@@ -12,14 +12,16 @@ module rvcpu_id_stage (
     input wire [`RVC_XLEN-1:0] wb_wd,
     output wire o_valid, input wire o_ready,
     output wire [`RVC_DECINFO_WIDTH-1:0] o_dec_info,
-    output wire [`RVC_XLEN-1:0] o_rs1, output wire [`RVC_XLEN-1:0] o_rs2
+    output wire [`RVC_XLEN-1:0] o_rs1, output wire [`RVC_XLEN-1:0] o_rs2,
+    output wire o_illegal
 );
     wire [4:0] rs1_idx, rs2_idx;
     wire rs1_en, rs2_en;
     wire [31:0] rs1_raw, rs2_raw;
 
     rvcpu_decode u_decode(.instr(i_ir), .pc(i_pc), .dec_info(o_dec_info),
-        .rs1_idx(rs1_idx), .rs2_idx(rs2_idx), .rs1_en(rs1_en), .rs2_en(rs2_en));
+        .rs1_idx(rs1_idx), .rs2_idx(rs2_idx), .rs1_en(rs1_en), .rs2_en(rs2_en),
+        .illegal(o_illegal));
     rvcpu_regfile u_regfile(.clk(clk), .rst_n(rst_n), .rs1_addr(rs1_idx),
         .rs2_addr(rs2_idx), .rs1_data(rs1_raw), .rs2_data(rs2_raw),
         .wb_we(wb_we), .wb_wa(wb_wa), .wb_wd(wb_wd));

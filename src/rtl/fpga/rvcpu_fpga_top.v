@@ -49,6 +49,9 @@ module rvcpu_fpga_top #(
     rvcpu_top #(.IMEM_INIT_FILE(IMEM_INIT_FILE)) u_core (
         .clk           (sys_clk),
         .rst_n         (reset_sync[1]),
+        .irq_software  (1'b0),
+        .irq_timer     (1'b0),
+        .irq_external  (1'b0),
         .debug_pc      (debug_pc),
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),

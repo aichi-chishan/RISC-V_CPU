@@ -14,6 +14,9 @@
 module rvcpu_core (
     input  wire        clk,
     input  wire        rst_n,
+    input  wire        irq_software,
+    input  wire        irq_timer,
+    input  wire        irq_external,
     // IFU 只读命令/响应通道，地址采用统一的 32 位字节地址。
     output wire        ifu_cmd_valid,
     input  wire        ifu_cmd_ready,
@@ -63,12 +66,14 @@ module rvcpu_core (
     reg [31:0] if_id_ir, if_id_pc;
     reg if_id_pred_taken;
     reg [31:0] if_id_pred_target;
+    reg if_id_access_err;
 
     // -------------------------------------------------------------------------
     // ID：完整 RV32I 译码、寄存器堆读取。
     // -------------------------------------------------------------------------
     wire [`RVC_DECINFO_WIDTH-1:0] id_dec_info;
     wire [31:0] id_rs1, id_rs2;
+    wire id_illegal;
     wire [4:0] id_rs1_idx = id_dec_info[`RVC_DECINFO_RS1IDX];
     wire [4:0] id_rs2_idx = id_dec_info[`RVC_DECINFO_RS2IDX];
     wire id_rs1_en = id_dec_info[`RVC_DECINFO_RS1EN];
@@ -77,6 +82,9 @@ module rvcpu_core (
     reg id_ex_valid;
     reg [`RVC_DECINFO_WIDTH-1:0] id_ex_dec_info;
     reg [31:0] id_ex_rs1, id_ex_rs2;
+    reg [31:0] id_ex_ir;
+    reg id_ex_illegal;
+    reg id_ex_access_err;
     reg id_ex_pred_taken;
     reg [31:0] id_ex_pred_target;
 
@@ -118,6 +126,84 @@ module rvcpu_core (
     wire [31:0] ex_actual_next = ex_branch_taken ? ex_branch_target : (ex_pc + 32'd4);
     wire [31:0] ex_pred_next = id_ex_pred_taken ? id_ex_pred_target : (ex_pc + 32'd4);
     wire ex_mispredict = id_ex_valid && (ex_actual_next != ex_pred_next);
+
+    // -------------------------------------------------------------------------
+    // CSR / Trap：所有同步异常在 EX 识别，当前异常指令被杀死；中断也只在
+    // 有效指令边界进入并保存该指令 PC，保证返回后从尚未执行的指令继续。
+    // -------------------------------------------------------------------------
+    wire ex_is_sys = id_ex_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_SYS;
+    wire ex_is_csr = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_CSR];
+    wire ex_is_ecall = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_ECALL];
+    wire ex_is_ebreak = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_EBREAK];
+    wire ex_is_mret = ex_is_sys && id_ex_dec_info[`RVC_DECINFO_SYS_MRET];
+    wire [11:0] ex_csr_addr = id_ex_ir[31:20];
+    wire [1:0] ex_csr_cmd = id_ex_dec_info[`RVC_DECINFO_SYS_CSR_CMD];
+    wire ex_csr_imm = id_ex_dec_info[`RVC_DECINFO_SYS_CSR_IMM];
+    wire [31:0] ex_csr_operand = ex_csr_imm ? {27'b0, id_ex_ir[19:15]} : ex_alu_result;
+    // CSRRS/CSRRC 在源为 x0/zimm=0 时只是读，不应因只读 CSR 而报错。
+    wire ex_csr_write_intent = ex_is_csr &&
+        ((ex_csr_cmd == 2'b01) || (ex_csr_operand != 32'b0));
+    wire [31:0] csr_rdata;
+    wire csr_addr_valid, csr_writable;
+    wire csr_irq_request;
+    wire [31:0] csr_irq_cause, csr_trap_vector, csr_mret_pc;
+
+    wire ex_lsu = id_ex_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_LSU;
+    wire ex_load = ex_lsu && id_ex_dec_info[`RVC_DECINFO_LSU_LOAD];
+    wire ex_store = ex_lsu && id_ex_dec_info[`RVC_DECINFO_LSU_STORE];
+    wire [1:0] ex_lsu_size = id_ex_dec_info[`RVC_DECINFO_LSU_SIZE];
+    wire ex_addr_aligned = (ex_lsu_size == 2'b00) ? 1'b1 :
+                           (ex_lsu_size == 2'b01) ? !ex_alu_result[0] :
+                                                   (ex_alu_result[1:0] == 2'b00);
+    wire ex_inst_misalign = ex_branch_taken && (ex_branch_target[1:0] != 2'b00);
+    wire ex_csr_illegal = ex_is_csr &&
+        (!csr_addr_valid || (ex_csr_write_intent && !csr_writable));
+    wire ex_sync_exception = id_ex_valid &&
+        (id_ex_illegal || ex_csr_illegal || ex_is_ecall || ex_is_ebreak ||
+         ex_inst_misalign || ((ex_load || ex_store) && !ex_addr_aligned) ||
+         id_ex_access_err || ((ex_load || ex_store) && lsu_rsp_err));
+
+    reg [31:0] ex_exception_cause, ex_exception_tval;
+    always @(*) begin
+        ex_exception_cause = `RVC_CAUSE_ILLEGAL;
+        ex_exception_tval = id_ex_ir;
+        if (ex_inst_misalign) begin
+            ex_exception_cause = `RVC_CAUSE_INST_MISALIGN;
+            ex_exception_tval = ex_branch_target;
+        end else if (id_ex_access_err) begin
+            ex_exception_cause = `RVC_CAUSE_INST_ACCESS;
+            ex_exception_tval = ex_pc;
+        end else if (id_ex_illegal || ex_csr_illegal) begin
+            ex_exception_cause = `RVC_CAUSE_ILLEGAL;
+            ex_exception_tval = id_ex_ir;
+        end else if (ex_is_ebreak) begin
+            ex_exception_cause = `RVC_CAUSE_BREAKPOINT;
+            ex_exception_tval = 32'b0;
+        end else if (ex_load && !ex_addr_aligned) begin
+            ex_exception_cause = `RVC_CAUSE_LOAD_MISALIGN;
+            ex_exception_tval = ex_alu_result;
+        end else if (ex_load && lsu_rsp_err) begin
+            ex_exception_cause = `RVC_CAUSE_LOAD_ACCESS;
+            ex_exception_tval = ex_alu_result;
+        end else if (ex_store && !ex_addr_aligned) begin
+            ex_exception_cause = `RVC_CAUSE_STORE_MISALIGN;
+            ex_exception_tval = ex_alu_result;
+        end else if (ex_store && lsu_rsp_err) begin
+            ex_exception_cause = `RVC_CAUSE_STORE_ACCESS;
+            ex_exception_tval = ex_alu_result;
+        end else if (ex_is_ecall) begin
+            ex_exception_cause = `RVC_CAUSE_ECALL_M;
+            ex_exception_tval = 32'b0;
+        end
+    end
+
+    wire ex_take_irq = id_ex_valid && !ex_sync_exception && csr_irq_request;
+    wire ex_take_trap = ex_sync_exception || ex_take_irq;
+    wire ex_take_mret = id_ex_valid && !ex_take_trap && ex_is_mret;
+    wire ex_kill = ex_take_trap || ex_take_mret;
+    wire control_redirect = ex_take_trap || ex_take_mret || ex_mispredict;
+    wire [31:0] control_target = ex_take_trap ? csr_trap_vector :
+                                 ex_take_mret ? csr_mret_pc : ex_actual_next;
 
     // -------------------------------------------------------------------------
     // MEM/WB：数据存储器访问与最终写回。
@@ -163,8 +249,11 @@ module rvcpu_core (
             ex_mem_valid <= 1'b0; mem_wb_valid <= 1'b0;
             if_id_ir <= `RVC_NOP_INSTR; if_id_pc <= 32'b0;
             if_id_pred_taken <= 1'b0; if_id_pred_target <= 32'b0;
+            if_id_access_err <= 1'b0;
             id_ex_dec_info <= {`RVC_DECINFO_WIDTH{1'b0}};
-            id_ex_rs1 <= 32'b0; id_ex_rs2 <= 32'b0;
+            id_ex_rs1 <= 32'b0; id_ex_rs2 <= 32'b0; id_ex_ir <= `RVC_NOP_INSTR;
+            id_ex_illegal <= 1'b0;
+            id_ex_access_err <= 1'b0;
             id_ex_pred_taken <= 1'b0; id_ex_pred_target <= 32'b0;
             ex_mem_dec_info <= {`RVC_DECINFO_WIDTH{1'b0}};
             ex_mem_alu_result <= 32'b0; ex_mem_store_data <= 32'b0;
@@ -179,9 +268,9 @@ module rvcpu_core (
             mem_wb_dec_info <= mem_dec_info;
             mem_wb_alu_result <= mem_alu_result;
             mem_wb_mem_result <= mem_mem_result;
-            ex_mem_valid <= id_ex_valid;
+            ex_mem_valid <= id_ex_valid && !ex_kill;
             ex_mem_dec_info <= ex_dec_info;
-            ex_mem_alu_result <= ex_alu_result;
+            ex_mem_alu_result <= ex_is_csr ? csr_rdata : ex_alu_result;
             ex_mem_store_data <= ex_store_data;
 
             if (if_is_branch || if_is_jal)
@@ -191,8 +280,8 @@ module rvcpu_core (
             if (load_use_stall && !ex_mispredict)
                 load_stall_count <= load_stall_count + 32'd1;
 
-            if (ex_mispredict) begin
-                pc <= ex_actual_next;
+            if (control_redirect) begin
+                pc <= control_target;
                 if_id_valid <= 1'b0;
                 id_ex_valid <= 1'b0;
             end else if (load_use_stall) begin
@@ -207,10 +296,14 @@ module rvcpu_core (
                 if_id_pc <= pc;
                 if_id_pred_taken <= if_pred_taken;
                 if_id_pred_target <= if_pred_target;
+                if_id_access_err <= ifu_rsp_err;
                 id_ex_valid <= if_id_valid;
                 id_ex_dec_info <= id_dec_info;
                 id_ex_rs1 <= id_rs1;
                 id_ex_rs2 <= id_rs2;
+                id_ex_ir <= if_id_ir;
+                id_ex_illegal <= id_illegal;
+                id_ex_access_err <= if_id_access_err;
                 id_ex_pred_taken <= if_id_pred_taken;
                 id_ex_pred_target <= if_id_pred_target;
             end
@@ -232,7 +325,20 @@ module rvcpu_core (
         .i_ir(if_id_ir), .i_pc(if_id_pc),
         .wb_we(wb_we), .wb_wa(wb_wa), .wb_wd(wb_wd),
         .o_valid(), .o_ready(1'b1), .o_dec_info(id_dec_info),
-        .o_rs1(id_rs1), .o_rs2(id_rs2));
+        .o_rs1(id_rs1), .o_rs2(id_rs2), .o_illegal(id_illegal));
+
+    rvcpu_csr_file u_csr_file(
+        .clk(clk), .rst_n(rst_n), .csr_addr(ex_csr_addr), .csr_cmd(ex_csr_cmd),
+        .csr_write_intent(id_ex_valid && ex_csr_write_intent && !ex_take_trap),
+        .csr_wdata(ex_csr_operand), .csr_rdata(csr_rdata),
+        .csr_addr_valid(csr_addr_valid), .csr_writable(csr_writable),
+        .trap_enter(ex_take_trap), .trap_epc(ex_pc),
+        .trap_cause(ex_take_irq ? csr_irq_cause : ex_exception_cause),
+        .trap_tval(ex_take_irq ? 32'b0 : ex_exception_tval),
+        .mret(ex_take_mret), .retire(mem_wb_valid),
+        .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
+        .irq_request(csr_irq_request), .irq_cause(csr_irq_cause),
+        .trap_vector(csr_trap_vector), .mret_pc(csr_mret_pc));
 
     rvcpu_ex_stage u_ex_stage(
         .i_valid(id_ex_valid), .i_ready(), .i_dec_info(id_ex_dec_info),
@@ -292,6 +398,7 @@ module rvcpu_top #(
     parameter IMEM_INIT_FILE = ""
 ) (
     input wire clk, input wire rst_n,
+    input wire irq_software, input wire irq_timer, input wire irq_external,
     output wire [31:0] debug_pc, output wire [2:0] debug_stage,
     output wire debug_wb_we, output wire [4:0] debug_wb_rd,
     output wire [31:0] debug_wb_data,
@@ -322,6 +429,7 @@ module rvcpu_top #(
 
     rvcpu_core u_core(
         .clk(clk), .rst_n(rst_n),
+        .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
         .ifu_cmd_valid(ifu_cmd_valid), .ifu_cmd_ready(ifu_cmd_ready),
         .ifu_cmd_addr(ifu_cmd_addr), .ifu_rsp_valid(ifu_rsp_valid),
         .ifu_rsp_ready(ifu_rsp_ready), .ifu_rsp_rdata(ifu_rsp_rdata), .ifu_rsp_err(1'b0),

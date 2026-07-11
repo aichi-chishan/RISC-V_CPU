@@ -21,7 +21,8 @@ module rvcpu_decode (
     output wire [`RVC_RFIDX_WIDTH-1:0] rs1_idx,
     output wire [`RVC_RFIDX_WIDTH-1:0] rs2_idx,
     output wire rs1_en,
-    output wire rs2_en
+    output wire rs2_en,
+    output wire illegal
 );
     // RV32I 的公共指令字段。
     wire [6:0] opcode = instr[6:0];
@@ -304,9 +305,44 @@ module rvcpu_decode (
             // 或缓存，因此其可见效果就是等待此前指令完成后作为 NOP 继续执行。
             7'b0001111: if (funct3 == 3'b000) begin
                 dec_info[`RVC_DECINFO_ALU_NOP] = 1'b1;
+                dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_SYS;
+                dec_info[`RVC_DECINFO_SYS_FENCE] = 1'b1;
+            end
+
+            // SYSTEM：支持机器模式 ECALL/EBREAK/MRET 和 Zicsr 六条指令。
+            // CSR 地址直接保留在流水中的原始指令里，避免扩大公共译码总线。
+            7'b1110011: begin
+                if (instr == 32'h0000_0073) begin
+                    dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_SYS;
+                    dec_info[`RVC_DECINFO_SYS_ECALL] = 1'b1;
+                end else if (instr == 32'h0010_0073) begin
+                    dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_SYS;
+                    dec_info[`RVC_DECINFO_SYS_EBREAK] = 1'b1;
+                end else if (instr == 32'h3020_0073) begin
+                    dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_SYS;
+                    dec_info[`RVC_DECINFO_SYS_MRET] = 1'b1;
+                end else if (funct3 != 3'b000 && funct3 != 3'b100) begin
+                    dec_info[`RVC_DECINFO_GRP] = `RVC_DECINFO_GRP_SYS;
+                    dec_info[`RVC_DECINFO_SYS_CSR] = 1'b1;
+                    dec_info[`RVC_DECINFO_SYS_CSR_CMD] = funct3[1:0];
+                    dec_info[`RVC_DECINFO_SYS_CSR_IMM] = funct3[2];
+                    dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                    dec_info[`RVC_DECINFO_WB_SEL] = `RVC_WB_SEL_CSR;
+                    if (!funct3[2]) dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                end
             end
 
             default: begin end
         endcase
     end
+
+    // 默认译码仍保留 ALU_NOP。只有规范 NOP、合法 FENCE 或已识别的 SYSTEM
+    // 指令可以在 ALU_NOP 保持为 1 时被视为合法，其余保留编码触发非法指令异常。
+    assign illegal = dec_info[`RVC_DECINFO_ALU_NOP] &&
+                     (instr != `RVC_NOP_INSTR) &&
+                     !dec_info[`RVC_DECINFO_SYS_FENCE] &&
+                     !dec_info[`RVC_DECINFO_SYS_ECALL] &&
+                     !dec_info[`RVC_DECINFO_SYS_EBREAK] &&
+                     !dec_info[`RVC_DECINFO_SYS_MRET] &&
+                     !dec_info[`RVC_DECINFO_SYS_CSR];
 endmodule

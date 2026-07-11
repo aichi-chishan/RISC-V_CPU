@@ -171,7 +171,7 @@ module rvcpu_rv32i_tb;
             expect_reg(5'd22, 32'h1234_5000, "LUI");
             expect_reg(5'd23, auipc_expected, "AUIPC");
             expect_reg(5'd24, 32'h0000_0080, "Load/Store 基址");
-            expect_reg(5'd25, 32'h0000_0000, "非对齐 Load 临时策略");
+            expect_reg(5'd25, 32'h0000_0055, "异常测试前的普通寄存器结果");
             expect_reg(5'd26, 32'h0000_0044, "LB 符号扩展正数");
             expect_reg(5'd27, 32'h0000_0044, "LBU");
             expect_reg(5'd28, 32'hffff_ffff, "LB 符号扩展负数");
@@ -208,6 +208,7 @@ module rvcpu_rv32i_tb;
 
     rvcpu_top #(.IMEM_INIT_FILE("")) u_dut (
         .clk(clk), .rst_n(rst_n),
+        .irq_software(1'b0), .irq_timer(1'b0), .irq_external(1'b0),
         .debug_pc(debug_pc), .debug_stage(debug_stage),
         .debug_wb_we(debug_wb_we), .debug_wb_rd(debug_wb_rd),
         .debug_wb_data(debug_wb_data),
@@ -272,16 +273,15 @@ module rvcpu_rv32i_tb;
         u_dut.u_imem.mem[p] = enc_s(8, 22, 24, 3'b010); p = p + 1; // SW
         u_dut.u_imem.mem[p] = enc_i(8, 24, 3'b010, 14, 7'b0000011); p = p + 1; // LW
 
-        // 非法 Store funct3=011 必须停留在无副作用的默认译码分支。随后刻意
-        // 发起两个非对齐 Store 和两个非对齐 Load，验证 MEM 阶段的临时保守
-        // 策略：写请求被阻止，读结果归零。以后接入异常模块后，这些访问会被
-        // 替换为 address-misaligned trap，而不是继续向下执行。
-        u_dut.u_imem.mem[p] = enc_s(12, 1, 24, 3'b011); p = p + 1;
+        // 非法 Store 编码从第四阶段起触发非法指令异常，独立 trap 测试覆盖。
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
         u_dut.u_imem.mem[p] = enc_i(16'h55, 0, 3'b000, 25, 7'b0010011); p = p + 1;
-        u_dut.u_imem.mem[p] = enc_s(9, 25, 24, 3'b001); p = p + 1;  // 非对齐 SH
-        u_dut.u_imem.mem[p] = enc_s(10, 25, 24, 3'b010); p = p + 1; // 非对齐 SW
-        u_dut.u_imem.mem[p] = enc_i(9, 24, 3'b001, 25, 7'b0000011); p = p + 1; // 非对齐 LH
-        u_dut.u_imem.mem[p] = enc_i(10, 24, 3'b010, 25, 7'b0000011); p = p + 1; // 非对齐 LW
+        // 非对齐访问从第四阶段起属于精确异常，独立 trap 测试负责验证。
+        // 基础 RV32I 回归使用 NOP 保持顺序控制流，避免无处理程序时进入 mtvec。
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
 
         // --- 六种跳转分支：所有跳转位移为 +8，恰好越过一条加法指令 ---
         u_dut.u_imem.mem[p] = enc_i(0, 0, 3'b000, 15, 7'b0010011); p = p + 1;
@@ -319,9 +319,9 @@ module rvcpu_rv32i_tb;
         u_dut.u_imem.mem[p] = enc_i(0, 17, 3'b000, 18, 7'b1100111); p = p + 1;
         u_dut.u_imem.mem[p] = enc_i(32, 15, 3'b000, 15, 7'b0010011); p = p + 1;
 
-        // 非法 R 型 funct7 不能改写此前由 SLT 得到的 x6；随后尝试写 x0，
-        // 再次验证寄存器堆硬连线零的实现。
-        u_dut.u_imem.mem[p] = enc_r(7'b0100001, 2, 1, 3'b000, 6); p = p + 1;
+        // 非法指令从第四阶段起会进入异常处理程序，已由独立 trap 回归覆盖。
+        // 本基础 RV32I 回归在此放置规范 NOP，随后继续验证 x0 硬连线零。
+        u_dut.u_imem.mem[p] = `RVC_NOP_INSTR; p = p + 1;
         u_dut.u_imem.mem[p] = enc_i(123, 0, 3'b000, 0, 7'b0010011); p = p + 1;
         u_dut.u_imem.mem[p] = enc_i(1, 0, 3'b000, 31, 7'b0010011); p = p + 1;
         u_dut.u_imem.mem[p] = enc_s(16'h3fc, 31, 0, 3'b010); p = p + 1;
