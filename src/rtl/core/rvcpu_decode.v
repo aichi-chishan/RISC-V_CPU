@@ -1,8 +1,18 @@
 `include "./defines.v"
 
 //==============================================================================
-// RV32I 译码器：按 opcode/funct3/funct7 生成唯一的 dec_info 宽控制总线。
-// 低位为公共字段，高位为按指令组复用的独热控制字段。
+// RV32I 指令译码器
+//
+// 本模块只负责回答两件事：
+//   1. 当前 32 位指令是不是本阶段支持的、编码合法的 RV32I 指令；
+//   2. 若合法，后续 EX/MEM/WB 阶段各自需要做什么。
+//
+// 所有控制信息都装入 dec_info。这样可以避免不同阶段重复译码同一条指令，
+// 也是后续改造为五级流水时最重要的接口边界。
+//
+// 当前 Phase 1 尚未实现异常单元，因此非法编码被安全地当作 NOP：不读写
+// 存储器、不改写通用寄存器，也不改变 PC 的正常顺序流。将来加入异常后，
+// 只需在默认分支中补充 illegal-instruction 异常标记即可。
 //==============================================================================
 module rvcpu_decode (
     input  wire [31:0] instr,
@@ -13,131 +23,290 @@ module rvcpu_decode (
     output wire rs1_en,
     output wire rs2_en
 );
-    // 指令字段拆分
+    // RV32I 的公共指令字段。
     wire [6:0] opcode = instr[6:0];
     wire [2:0] funct3 = instr[14:12];
     wire [6:0] funct7 = instr[31:25];
-    wire [4:0] rd = instr[11:7];
-    // 六种立即数格式：I/S/B/U/J 型，均以 [31] 符号位扩展至 32 位
+    wire [4:0] rd     = instr[11:7];
+
+    // 各类立即数均在译码阶段扩展为 32 位字节偏移/操作数。
     wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
     wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
-    wire [31:0] imm_b = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
+    wire [31:0] imm_b = {{19{instr[31]}}, instr[31], instr[7],
+                         instr[30:25], instr[11:8], 1'b0};
     wire [31:0] imm_u = {instr[31:12], 12'b0};
-    wire [31:0] imm_j = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
+    wire [31:0] imm_j = {{11{instr[31]}}, instr[31], instr[19:12],
+                         instr[20], instr[30:21], 1'b0};
 
-    // 寄存器地址直接从指令字段取出（无需译码）
     assign rs1_idx = instr[19:15];
     assign rs2_idx = instr[24:20];
-    // 读使能从译码结果中读取（译码决定哪些寄存器被用到）
-    assign rs1_en = dec_info[`RVC_DECINFO_RS1EN];
-    assign rs2_en = dec_info[`RVC_DECINFO_RS2EN];
+    assign rs1_en  = dec_info[`RVC_DECINFO_RS1EN];
+    assign rs2_en  = dec_info[`RVC_DECINFO_RS2EN];
 
-    // 译码主逻辑：按 opcode 区分指令类型，设置 dec_info 对应位域
+    // 将一条普通 ALU 指令共有的控制字段放在这里，正文中每次只需选择
+    // 运算种类即可。这里不能设为 task，因为 dec_info 是组合逻辑输出，
+    // 明确地在每个合法分支中赋值更便于波形分析和综合检查。
     always @(*) begin
-        dec_info = {`RVC_DECINFO_WIDTH{1'b0}};              // 默认全零
-        dec_info[`RVC_DECINFO_RS1IDX] = instr[19:15];       // 三段寄存器地址始终写入
+        // 默认是无副作用 NOP。特别注意：RDWEN 默认为 0，防止错误编码
+        // 因为 rd 字段碰巧非零而破坏寄存器堆。
+        dec_info = {`RVC_DECINFO_WIDTH{1'b0}};
+        dec_info[`RVC_DECINFO_RS1IDX] = instr[19:15];
         dec_info[`RVC_DECINFO_RS2IDX] = instr[24:20];
         dec_info[`RVC_DECINFO_RDIDX]  = rd;
         dec_info[`RVC_DECINFO_PC]     = pc;
-        dec_info[`RVC_DECINFO_WB_SEL] = `RVC_WB_SEL_ALU;    // 默认写回 ALU 结果
+        dec_info[`RVC_DECINFO_WB_SEL] = `RVC_WB_SEL_ALU;
+        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b1;
 
         case (opcode)
-            7'b0110011: begin // R 型：寄存器 - 寄存器运算（rs1 OP rs2 → rd）
-                dec_info[`RVC_DECINFO_GRP]  = `RVC_DECINFO_GRP_ALU;
-                dec_info[`RVC_DECINFO_RS1EN]= 1'b1;
-                dec_info[`RVC_DECINFO_RS2EN]= 1'b1;
-                dec_info[`RVC_DECINFO_RDWEN]= 1'b1;
+            //----------------------------------------------------------------------
+            // OP：寄存器-寄存器整数运算。RV32I 只允许 funct7 为 0000000，
+            // ADD/SUB、SRL/SRA 两对例外分别还允许 0100000。
+            //----------------------------------------------------------------------
+            7'b0110011: begin
                 case (funct3)
-                    3'b000: if (funct7[5]) dec_info[`RVC_DECINFO_ALU_SUB]=1'b1;   // SUB
-                            else           dec_info[`RVC_DECINFO_ALU_ADD]=1'b1;   // ADD
-                    3'b001: dec_info[`RVC_DECINFO_ALU_SLL] = 1'b1;                // SLL
-                    3'b010: dec_info[`RVC_DECINFO_ALU_SLT] = 1'b1;                // SLT
-                    3'b011: dec_info[`RVC_DECINFO_ALU_SLTU]= 1'b1;                // SLTU
-                    3'b100: dec_info[`RVC_DECINFO_ALU_XOR] = 1'b1;                // XOR
-                    3'b101: if (funct7[5]) dec_info[`RVC_DECINFO_ALU_SRA]=1'b1;   // SRA
-                            else           dec_info[`RVC_DECINFO_ALU_SRL]=1'b1;   // SRL
-                    3'b110: dec_info[`RVC_DECINFO_ALU_OR]  = 1'b1;                // OR
-                    3'b111: dec_info[`RVC_DECINFO_ALU_AND] = 1'b1;                // AND
-                    default: begin end  // 安全默认，避免推断锁存器
+                    3'b000: begin
+                        if (funct7 == 7'b0000000 || funct7 == 7'b0100000) begin
+                            dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                            dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                            dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                            dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                            dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                            if (funct7 == 7'b0000000)
+                                dec_info[`RVC_DECINFO_ALU_ADD] = 1'b1;
+                            else
+                                dec_info[`RVC_DECINFO_ALU_SUB] = 1'b1;
+                        end
+                    end
+                    3'b001: if (funct7 == 7'b0000000) begin // SLL
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_SLL] = 1'b1;
+                    end
+                    3'b010: if (funct7 == 7'b0000000) begin // SLT
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_SLT] = 1'b1;
+                    end
+                    3'b011: if (funct7 == 7'b0000000) begin // SLTU
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_SLTU] = 1'b1;
+                    end
+                    3'b100: if (funct7 == 7'b0000000) begin // XOR
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_XOR] = 1'b1;
+                    end
+                    3'b101: begin
+                        if (funct7 == 7'b0000000 || funct7 == 7'b0100000) begin
+                            dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                            dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                            dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                            dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                            dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                            if (funct7 == 7'b0000000)
+                                dec_info[`RVC_DECINFO_ALU_SRL] = 1'b1;
+                            else
+                                dec_info[`RVC_DECINFO_ALU_SRA] = 1'b1;
+                        end
+                    end
+                    3'b110: if (funct7 == 7'b0000000) begin // OR
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_OR] = 1'b1;
+                    end
+                    3'b111: if (funct7 == 7'b0000000) begin // AND
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN] = 1'b1;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_AND] = 1'b1;
+                    end
+                    default: begin end
                 endcase
             end
-            7'b0010011: begin // I 型：立即数运算（rs1 OP imm → rd）
-                dec_info[`RVC_DECINFO_GRP]=`RVC_DECINFO_GRP_ALU;
-                dec_info[`RVC_DECINFO_RS1EN]=1'b1;
-                dec_info[`RVC_DECINFO_RDWEN]=1'b1;
-                dec_info[`RVC_DECINFO_OP2SEL]=1'b1;          // ALU op2 选立即数
-                dec_info[`RVC_DECINFO_IMM]=imm_i;
+
+            //----------------------------------------------------------------------
+            // OP-IMM：立即数运算。移位立即数在 RV32I 中的高 7 位不是任意值，
+            // 必须严格检查，以免将 M/保留扩展错误解释为普通移位。
+            //----------------------------------------------------------------------
+            7'b0010011: begin
                 case (funct3)
-                    3'b000: dec_info[`RVC_DECINFO_ALU_ADD]=1'b1;                  // ADDI
-                    3'b001: dec_info[`RVC_DECINFO_ALU_SLL]=1'b1;                  // SLLI
-                    3'b010: dec_info[`RVC_DECINFO_ALU_SLT]=1'b1;                  // SLTI
-                    3'b011: dec_info[`RVC_DECINFO_ALU_SLTU]=1'b1;                 // SLTIU
-                    3'b100: dec_info[`RVC_DECINFO_ALU_XOR]=1'b1;                  // XORI
-                    3'b101: if (instr[30]) dec_info[`RVC_DECINFO_ALU_SRA]=1'b1;   // SRAI
-                            else           dec_info[`RVC_DECINFO_ALU_SRL]=1'b1;   // SRLI
-                    3'b110: dec_info[`RVC_DECINFO_ALU_OR]=1'b1;                   // ORI
-                    3'b111: dec_info[`RVC_DECINFO_ALU_AND]=1'b1;                  // ANDI
-                    default: begin end  // 安全默认，避免推断锁存器
+                    3'b000, 3'b010, 3'b011, 3'b100, 3'b110, 3'b111: begin
+                        dec_info[`RVC_DECINFO_GRP]    = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_OP2SEL] = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]    = imm_i;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        case (funct3)
+                            3'b000: dec_info[`RVC_DECINFO_ALU_ADD]  = 1'b1; // ADDI
+                            3'b010: dec_info[`RVC_DECINFO_ALU_SLT]  = 1'b1; // SLTI
+                            3'b011: dec_info[`RVC_DECINFO_ALU_SLTU] = 1'b1; // SLTIU
+                            3'b100: dec_info[`RVC_DECINFO_ALU_XOR]  = 1'b1; // XORI
+                            3'b110: dec_info[`RVC_DECINFO_ALU_OR]   = 1'b1; // ORI
+                            default: dec_info[`RVC_DECINFO_ALU_AND] = 1'b1; // ANDI
+                        endcase
+                    end
+                    3'b001: if (funct7 == 7'b0000000) begin // SLLI
+                        dec_info[`RVC_DECINFO_GRP]    = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_OP2SEL] = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]    = imm_i;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        dec_info[`RVC_DECINFO_ALU_SLL] = 1'b1;
+                    end
+                    3'b101: if (funct7 == 7'b0000000 || funct7 == 7'b0100000) begin
+                        dec_info[`RVC_DECINFO_GRP]    = `RVC_DECINFO_GRP_ALU;
+                        dec_info[`RVC_DECINFO_RS1EN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN]  = 1'b1;
+                        dec_info[`RVC_DECINFO_OP2SEL] = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]    = imm_i;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        if (funct7 == 7'b0000000)
+                            dec_info[`RVC_DECINFO_ALU_SRL] = 1'b1; // SRLI
+                        else
+                            dec_info[`RVC_DECINFO_ALU_SRA] = 1'b1; // SRAI
+                    end
+                    default: begin end
                 endcase
             end
-            7'b0000011, 7'b0100011: begin // Load / Store
-                dec_info[`RVC_DECINFO_GRP]=`RVC_DECINFO_GRP_LSU;
-                dec_info[`RVC_DECINFO_RS1EN]=1'b1;
-                dec_info[`RVC_DECINFO_OP2SEL]=1'b1;          // 基址+偏移，op2 选立即数
-                dec_info[`RVC_DECINFO_ALU_ADD]=1'b1;         // ALU 做地址加法
-                dec_info[`RVC_DECINFO_LSU_SIZE]=funct3[1:0]; // 字长：00=byte,01=half,10=word
-                if (opcode == 7'b0000011) begin
-                    // Load：ALU 结果作为地址读 DMEM，结果写回 rd
-                    dec_info[`RVC_DECINFO_LSU_LOAD]=1'b1;
-                    dec_info[`RVC_DECINFO_LSU_USIGN]=funct3[2]; // 0=有符号扩展,1=无符号扩展
-                    dec_info[`RVC_DECINFO_RDWEN]=1'b1;
-                    dec_info[`RVC_DECINFO_WB_SEL]=`RVC_WB_SEL_MEM; // 写回选 MEM 读出数据
-                    dec_info[`RVC_DECINFO_IMM]=imm_i;
-                end else begin
-                    // Store：ALU 结果作为地址，rs2 数据写入 DMEM
-                    dec_info[`RVC_DECINFO_LSU_STORE]=1'b1;
-                    dec_info[`RVC_DECINFO_RS2EN]=1'b1;
-                    dec_info[`RVC_DECINFO_IMM]=imm_s;
-                end
-            end
-            7'b1100011: begin // 条件分支：BEQ/BNE/BLT/BGE/BLTU/BGEU
-                dec_info[`RVC_DECINFO_GRP]=`RVC_DECINFO_GRP_BJP;
-                dec_info[`RVC_DECINFO_RS1EN]=1'b1;
-                dec_info[`RVC_DECINFO_RS2EN]=1'b1;
-                dec_info[`RVC_DECINFO_IMM]=imm_b;            // B 型立即数（已 x2 对齐，末位 0）
+
+            //----------------------------------------------------------------------
+            // Load：只接收 LB/LH/LW/LBU/LHU 五种 funct3 组合。
+            //----------------------------------------------------------------------
+            7'b0000011: begin
                 case (funct3)
-                    3'b000: dec_info[`RVC_DECINFO_BJP_BEQ]=1'b1;
-                    3'b001: dec_info[`RVC_DECINFO_BJP_BNE]=1'b1;
-                    3'b100: dec_info[`RVC_DECINFO_BJP_BLT]=1'b1;
-                    3'b101: dec_info[`RVC_DECINFO_BJP_BGE]=1'b1;
-                    3'b110: dec_info[`RVC_DECINFO_BJP_BLTU]=1'b1;
-                    3'b111: dec_info[`RVC_DECINFO_BJP_BGEU]=1'b1;
-                    default: begin end  // 安全默认，避免推断锁存器
+                    3'b000, 3'b001, 3'b010, 3'b100, 3'b101: begin
+                        dec_info[`RVC_DECINFO_GRP]       = `RVC_DECINFO_GRP_LSU;
+                        dec_info[`RVC_DECINFO_RS1EN]     = 1'b1;
+                        dec_info[`RVC_DECINFO_RDWEN]     = 1'b1;
+                        dec_info[`RVC_DECINFO_OP2SEL]    = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]       = imm_i;
+                        dec_info[`RVC_DECINFO_ALU_ADD]   = 1'b1;
+                        dec_info[`RVC_DECINFO_LSU_LOAD]  = 1'b1;
+                        dec_info[`RVC_DECINFO_WB_SEL]    = `RVC_WB_SEL_MEM;
+                        dec_info[`RVC_DECINFO_ALU_NOP]   = 1'b0;
+                        case (funct3)
+                            3'b000: dec_info[`RVC_DECINFO_LSU_SIZE] = 2'b00; // LB
+                            3'b001: dec_info[`RVC_DECINFO_LSU_SIZE] = 2'b01; // LH
+                            3'b010: dec_info[`RVC_DECINFO_LSU_SIZE] = 2'b10; // LW
+                            3'b100: begin                                  // LBU
+                                dec_info[`RVC_DECINFO_LSU_SIZE]  = 2'b00;
+                                dec_info[`RVC_DECINFO_LSU_USIGN] = 1'b1;
+                            end
+                            default: begin                                  // LHU
+                                dec_info[`RVC_DECINFO_LSU_SIZE]  = 2'b01;
+                                dec_info[`RVC_DECINFO_LSU_USIGN] = 1'b1;
+                            end
+                        endcase
+                    end
+                    default: begin end
                 endcase
             end
-            7'b1101111, 7'b1100111: begin // JAL / JALR（无条件跳转并链接）
-                dec_info[`RVC_DECINFO_GRP]=`RVC_DECINFO_GRP_BJP;
-                dec_info[`RVC_DECINFO_RDWEN]=1'b1;              // 保存返回地址到 rd
-                dec_info[`RVC_DECINFO_WB_SEL]=`RVC_WB_SEL_PC4;  // 写回 PC+4
-                dec_info[`RVC_DECINFO_IMM]=(opcode==7'b1101111)?imm_j:imm_i;
-                if (opcode==7'b1101111) dec_info[`RVC_DECINFO_BJP_JAL]=1'b1;   // JAL：PC+imm
-                else begin
-                    dec_info[`RVC_DECINFO_BJP_JALR]=1'b1;                      // JALR：rs1+imm
-                    dec_info[`RVC_DECINFO_RS1EN]=1'b1;
-                end
+
+            // Store：只接收 SB/SH/SW。非法 funct3 不得产生写存储器使能。
+            7'b0100011: begin
+                case (funct3)
+                    3'b000, 3'b001, 3'b010: begin
+                        dec_info[`RVC_DECINFO_GRP]        = `RVC_DECINFO_GRP_LSU;
+                        dec_info[`RVC_DECINFO_RS1EN]      = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN]      = 1'b1;
+                        dec_info[`RVC_DECINFO_OP2SEL]     = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]        = imm_s;
+                        dec_info[`RVC_DECINFO_ALU_ADD]    = 1'b1;
+                        dec_info[`RVC_DECINFO_LSU_STORE]  = 1'b1;
+                        dec_info[`RVC_DECINFO_LSU_SIZE]   = funct3[1:0];
+                        dec_info[`RVC_DECINFO_ALU_NOP]    = 1'b0;
+                    end
+                    default: begin end
+                endcase
             end
-            7'b0110111, 7'b0010111: begin // LUI / AUIPC
-                dec_info[`RVC_DECINFO_GRP]=`RVC_DECINFO_GRP_ALU;
-                dec_info[`RVC_DECINFO_RDWEN]=1'b1;
-                dec_info[`RVC_DECINFO_OP2SEL]=1'b1;             // op2 选立即数
-                dec_info[`RVC_DECINFO_IMM]=imm_u;
-                if (opcode==7'b0110111) dec_info[`RVC_DECINFO_ALU_LUI]=1'b1;   // LUI：立即数直通
-                else begin
-                    dec_info[`RVC_DECINFO_ALU_AUIPC]=1'b1;                     // AUIPC：PC+立即数
-                    dec_info[`RVC_DECINFO_OP1SEL]=1'b1;                        // op1 选 PC
-                end
+
+            // 六种条件分支。分支不写 rd，但两个比较操作数都需要从寄存器堆读取。
+            7'b1100011: begin
+                case (funct3)
+                    3'b000, 3'b001, 3'b100, 3'b101, 3'b110, 3'b111: begin
+                        dec_info[`RVC_DECINFO_GRP]   = `RVC_DECINFO_GRP_BJP;
+                        dec_info[`RVC_DECINFO_RS1EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_RS2EN] = 1'b1;
+                        dec_info[`RVC_DECINFO_IMM]   = imm_b;
+                        dec_info[`RVC_DECINFO_ALU_NOP] = 1'b0;
+                        case (funct3)
+                            3'b000: dec_info[`RVC_DECINFO_BJP_BEQ]  = 1'b1;
+                            3'b001: dec_info[`RVC_DECINFO_BJP_BNE]  = 1'b1;
+                            3'b100: dec_info[`RVC_DECINFO_BJP_BLT]  = 1'b1;
+                            3'b101: dec_info[`RVC_DECINFO_BJP_BGE]  = 1'b1;
+                            3'b110: dec_info[`RVC_DECINFO_BJP_BLTU] = 1'b1;
+                            default: dec_info[`RVC_DECINFO_BJP_BGEU] = 1'b1;
+                        endcase
+                    end
+                    default: begin end
+                endcase
             end
-            default: dec_info[`RVC_DECINFO_ALU_NOP]=1'b1;       // 未知指令当作 NOP（ADDI x0,x0,0）
+
+            // JAL 的 rd 保存 PC+4；JALR 额外要求 funct3 必须为 000。
+            7'b1101111: begin
+                dec_info[`RVC_DECINFO_GRP]      = `RVC_DECINFO_GRP_BJP;
+                dec_info[`RVC_DECINFO_RDWEN]    = 1'b1;
+                dec_info[`RVC_DECINFO_WB_SEL]   = `RVC_WB_SEL_PC4;
+                dec_info[`RVC_DECINFO_IMM]      = imm_j;
+                dec_info[`RVC_DECINFO_BJP_JAL]  = 1'b1;
+                dec_info[`RVC_DECINFO_ALU_NOP]  = 1'b0;
+            end
+            7'b1100111: if (funct3 == 3'b000) begin
+                dec_info[`RVC_DECINFO_GRP]       = `RVC_DECINFO_GRP_BJP;
+                dec_info[`RVC_DECINFO_RS1EN]     = 1'b1;
+                dec_info[`RVC_DECINFO_RDWEN]     = 1'b1;
+                dec_info[`RVC_DECINFO_WB_SEL]    = `RVC_WB_SEL_PC4;
+                dec_info[`RVC_DECINFO_IMM]       = imm_i;
+                dec_info[`RVC_DECINFO_BJP_JALR]  = 1'b1;
+                dec_info[`RVC_DECINFO_ALU_NOP]   = 1'b0;
+            end
+
+            // LUI 将 U 立即数直接送到写回端；AUIPC 则使用 PC 作为 ALU 的第一个操作数。
+            7'b0110111: begin
+                dec_info[`RVC_DECINFO_GRP]      = `RVC_DECINFO_GRP_ALU;
+                dec_info[`RVC_DECINFO_RDWEN]    = 1'b1;
+                dec_info[`RVC_DECINFO_OP2SEL]   = 1'b1;
+                dec_info[`RVC_DECINFO_IMM]      = imm_u;
+                dec_info[`RVC_DECINFO_ALU_LUI]  = 1'b1;
+                dec_info[`RVC_DECINFO_ALU_NOP]  = 1'b0;
+            end
+            7'b0010111: begin
+                dec_info[`RVC_DECINFO_GRP]       = `RVC_DECINFO_GRP_ALU;
+                dec_info[`RVC_DECINFO_RDWEN]     = 1'b1;
+                dec_info[`RVC_DECINFO_OP1SEL]    = 1'b1;
+                dec_info[`RVC_DECINFO_OP2SEL]    = 1'b1;
+                dec_info[`RVC_DECINFO_IMM]       = imm_u;
+                dec_info[`RVC_DECINFO_ALU_AUIPC] = 1'b1;
+                dec_info[`RVC_DECINFO_ALU_NOP]   = 1'b0;
+            end
+
+            // FENCE 属于 RV32I 基本指令，但当前单发射、多周期内核没有乱序存储
+            // 或缓存，因此其可见效果就是等待此前指令完成后作为 NOP 继续执行。
+            7'b0001111: if (funct3 == 3'b000) begin
+                dec_info[`RVC_DECINFO_ALU_NOP] = 1'b1;
+            end
+
+            default: begin end
         endcase
     end
 endmodule

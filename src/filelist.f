@@ -15,3 +15,4 @@ src/rtl/mems/rvcpu_imem.v
 src/rtl/mems/rvcpu_dmem.v
 src/rtl/fpga/rvcpu_fpga_top.v
 src/tb/rvcpu_tb.v
+src/tb/rvcpu_rv32i_tb.v

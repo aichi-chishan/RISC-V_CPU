@@ -46,6 +46,10 @@ module rvcpu_tb;
     wire        debug_wb_we;
     wire [4:0]  debug_wb_rd;
     wire [31:0] debug_wb_data;
+    // rvcpu_top 新增的 LED 外设内部总线在本 smoke 测试中不检查，
+    // 仍显式连接以避免 ModelSim 将遗漏端口报告为潜在设计错误。
+    wire        periph_led_we;
+    wire [31:0] periph_led_wdata;
 
     initial begin
         clk = 1'b0;
@@ -69,7 +73,9 @@ module rvcpu_tb;
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),
         .debug_wb_rd   (debug_wb_rd),
-        .debug_wb_data (debug_wb_data)
+        .debug_wb_data (debug_wb_data),
+        .periph_led_we(periph_led_we),
+        .periph_led_wdata(periph_led_wdata)
     );
 
     //==========================================================================
