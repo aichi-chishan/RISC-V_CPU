@@ -17,7 +17,7 @@
 //   Phase 3: 添加 ICB 总线到 SRAM 时序的转换逻辑
 //==============================================================================
 
-`include "defines.v"
+`include "../core/defines.v"
 
 module rvcpu_sram ();
     // Phase 3 中实现

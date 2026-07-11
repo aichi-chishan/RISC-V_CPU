@@ -1,92 +1,59 @@
-# RISC-V CPU 项目
+# RV32I 多周期处理器
 
-## 项目概述
+本工程实现一个按 IF、ID、EX、MEM、WB 五个节拍执行的 RV32I 处理器。当前每次只执行一条指令，CPI 固定为 5，因此暂时不需要前推、阻塞和流水线冲刷。指令存储器采用组合读 `reg` 数组，数据存储器采用组合读、带字节掩码的同步写 `reg` 数组；不实现 CSR、异常和中断。
 
-从零设计一个 32 位 RISC-V 处理器，**以经典五级流水为目标，在 Phase 1 实现单周期版本**。支持 RV32I 基本整数指令集。
+## 模块划分
 
-## 核心设计哲学
+- `rvcpu_sequencer.v`：保存 PC，产生五个执行节拍，并在 WB 后更新 PC。
+- `rvcpu_decode.v`：译码 RV32I，将控制信息打包到 `dec_info` 总线。
+- `rvcpu_regfile.v`：32×32 位寄存器堆，x0 恒为零。
+- `rvcpu_*_stage.v`：分别实现五个阶段的组合逻辑。
+- `rvcpu_imem.v`、`rvcpu_dmem.v`：仿真用简单存储器。
+- `rvcpu_top.v`：连接阶段数据寄存器、控制器和存储器。
+- `rvcpu_pipeline_reg.v`：支持 valid/ready、阻塞和 flush 的弹性流水寄存器。
+- `rvcpu_hazard_unit.v`：为五级流水预留的前推和 Load-use 冒险控制。
+- `rvcpu_fpga_top.v`：复位同步、ROM 初始化参数和 Vivado ILA 调试出口。
 
-**单周期就是五级流水的"退化"版本** — 五级流水的阶段之间去掉流水寄存器就是单周期：
+代码结构借鉴蜂鸟 E203 的 `config/defines` 分层、译码信息总线、模块职责划分和简洁注释方式；本工程没有照搬 E203 的流水握手、总线、CSR 或异常系统。
 
-```
-Phase 1 (单周期):    IF ─▶ ID ─▶ EX ─▶ MEM ─▶ WB    (组合逻辑链)
-Phase 2 (五级流水):  IF → | IF/ID | → ID → | ID/EX | → EX → | EX/MEM | → MEM → | MEM/WB | → WB
-```
+## 仿真
 
-每个阶段模块 (`*_stage.v`) 是纯组合逻辑（除 PC 和写端口），Phase 2 只需在阶段间插入流水寄存器 + 前推/阻塞逻辑。
-
-## 借鉴 E203 的设计模式
-
-| E203 模式 | 本项目对应 | 说明 |
-|-----------|-----------|------|
-| dec_info 译码总线 | `defines.v` 位域定义 + `rvcpu_decode.v` | 宽位宽控制总线，贯穿全部阶段 |
-| config.v + defines.v 双层宏 | `config.v` (用户) + `defines.v` (派生) | 参数一处改、全局生效 |
-| valid/ready 握手 | 每个阶段模块的 i_valid/o_valid | 为流水线反压做准备 |
-| 功能单元分工 (IFU/EXU/LSU/BIU) | 五阶段 (IF/ID/EX/MEM/WB) | 按流水级分模块而非按功能分 |
-
-## 目录结构
-
-```
-src/
-├── rtl/core/
-│   ├── config.v              ← 参数配置（你修改参数的地方）
-│   ├── defines.v             ← 派生宏 + dec_info 位域定义
-│   ├── rvcpu_if_stage.v      ← IF: 取指阶段
-│   ├── rvcpu_id_stage.v      ← ID: 译码 + 寄存器堆读
-│   ├── rvcpu_ex_stage.v      ← EX: ALU + 分支判定
-│   ├── rvcpu_mem_stage.v     ← MEM: 数据存储器访问
-│   ├── rvcpu_wb_stage.v      ← WB: 写回选择
-│   ├── rvcpu_decode.v        ← 译码器（纯组合逻辑）
-│   ├── rvcpu_regfile.v       ← 寄存器堆（复用你的 regfile.v）
-│   ├── rvcpu_immgen.v        ← 立即数生成器（纯组合逻辑）
-│   └── rvcpu_top.v           ← 顶层：连接 5 个阶段 + 存储器
-├── rtl/mems/
-│   ├── rvcpu_imem.v          ← 指令存储器（组合读）
-│   └── rvcpu_dmem.v          ← 数据存储器（组合读 + 时序写）
-├── tb/
-│   └── rvcpu_tb.v            ← 主测试平台
-├── riscv-tests/
-│   ├── smoke_test.hex        ← 冒烟测试
-│   └── smoke_test.S          ← 测试汇编源码
-└── scripts/
-    └── build.sh              ← 编译/仿真脚本
-```
-
-## 推荐实现顺序
-
-从简单到复杂，每个模块都能独立验证：
-
-| # | 模块 | 复杂度 | 说明 |
-|---|------|--------|------|
-| 1 | `rvcpu_regfile.v` | ⭐ | 已有代码直接复用 |
-| 2 | `rvcpu_immgen.v` | ⭐ | 6 种格式，纯组合逻辑 |
-| 3 | `rvcpu_decode.v` | ⭐⭐⭐ | **最核心**，47 条指令译码 |
-| 4 | `rvcpu_if_stage.v` | ⭐⭐ | PC 寄存器 + IMEM 接口 |
-| 5 | `rvcpu_id_stage.v` | ⭐⭐ | 例化 decode + regfile + immgen |
-| 6 | `rvcpu_ex_stage.v` | ⭐⭐⭐ | ALU + 分支判定 |
-| 7 | `rvcpu_mem_stage.v` | ⭐⭐ | DMEM 读写 + 对齐/扩展 |
-| 8 | `rvcpu_wb_stage.v` | ⭐ | 写回 MUX |
-| 9 | `rvcpu_imem.v` + `rvcpu_dmem.v` | ⭐ | 存储器 |
-| 10 | `rvcpu_top.v` | ⭐⭐ | 顶层连线 |
-| 11 | `rvcpu_tb.v` | ⭐⭐ | 测试平台 |
-
-## 快速开始
+在工程根目录执行：
 
 ```bash
-# 语法检查
-bash src/scripts/build.sh compile
-
-# 运行仿真（需要 iverilog）
 bash src/scripts/build.sh simulate
-
-# 查看波形
-bash src/scripts/build.sh wave
-
-# 清理
-bash src/scripts/build.sh clean
 ```
 
-## 参考设计
+也可以在 PowerShell 中执行：
 
-- 蜂鸟 E203: `D:\Project\e203_hbirdv2\rtl\e203`
-- RISC-V 规范: https://riscv.org/technical/specifications/
+```powershell
+New-Item -ItemType Directory -Force build | Out-Null
+iverilog -g2012 -s rvcpu_tb -o build/rvcpu_tb.vvp -f src/filelist.f
+Push-Location build; vvp ./rvcpu_tb.vvp; Pop-Location
+```
+
+冒烟程序最终向数据存储器字节地址 `0x100` 写入 `1`，测试平台打印 `TEST PASSED`。
+
+ModelSim/Questa 批处理：
+
+```bash
+bash src/scripts/build.sh modelsim
+```
+
+脚本位于 `src/scripts/modelsim.do`。本机 ModelSim 2020.4 已验证全部文件编译为
+`0 errors, 0 warnings`；如果仿真启动时报 `Unable to checkout qhsimvl/msimhdlsim`，
+需要先修复本机 ModelSim 许可证，RTL 编译本身不受影响。
+
+Vivado 上板顶层为 `rvcpu_fpga_top`，当前工程器件是 `xc7z020clg400-2`。生成
+bitstream 前必须根据具体开发板补充时钟周期和引脚 XDC；`debug_*` 信号可直接
+加入 ILA。`src/scripts/vivado_synth.tcl` 用于无约束综合检查。
+
+## VS Code 跳转配置
+
+扩展 `mshr-h.veriloghdl` 1.28.1 已删除旧版 ctags 索引，跨文件定义、悬停、引用和跳转由 `slang-server` 完成。本机实测 bundled WASM 在连续打开文档后会停止响应，因此工程固定使用官方 native `slang-server` 0.2.5：
+
+- `.vscode/settings.json`：启用 `.tools/slang-server/slang-server.exe`，并保留 xvlog 单文件检查。
+- `.slang/server.json`：指定工程 filelist、索引目录和 include 路径。
+- `src/filelist.f`：列出全部 RTL 与测试平台文件。
+
+修改配置后，在 VS Code 命令面板执行 `Developer: Reload Window`。状态栏应显示 `slang-server: native`；若仍异常，执行 `Verilog: Doctor` 和 `Verilog: Show slang-server Output`。源码中的 include 使用显式相对路径，因此文件路径、跨文件模块、宏和信号定义均可 Ctrl+左键跳转。

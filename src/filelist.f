@@ -1,0 +1,16 @@
+src/rtl/core/rvcpu_decode.v
+src/rtl/core/rvcpu_regfile.v
+src/rtl/core/rvcpu_immgen.v
+src/rtl/core/rvcpu_if_stage.v
+src/rtl/core/rvcpu_id_stage.v
+src/rtl/core/rvcpu_ex_stage.v
+src/rtl/core/rvcpu_mem_stage.v
+src/rtl/core/rvcpu_wb_stage.v
+src/rtl/core/rvcpu_pipeline_reg.v
+src/rtl/core/rvcpu_hazard_unit.v
+src/rtl/core/rvcpu_sequencer.v
+src/rtl/core/rvcpu_top.v
+src/rtl/mems/rvcpu_imem.v
+src/rtl/mems/rvcpu_dmem.v
+src/rtl/fpga/rvcpu_fpga_top.v
+src/tb/rvcpu_tb.v

@@ -1,3 +1,7 @@
+`ifndef RVC_DEFINES_V
+`define RVC_DEFINES_V
+`timescale 1ns/1ps
+
 //==============================================================================
 // Designer   : [your name]
 //
@@ -16,7 +20,7 @@
 // 参考设计：E203 e203_defines.v — 完整展示了位域定义的最佳实践
 //==============================================================================
 
-`include "config.v"
+`include "./config.v"
 
 //==============================================================================
 // 一、ISA 宽度宏 — 从 config.v 派生
@@ -332,7 +336,36 @@
 `define RVC_DECINFO_WIDTH         (`RVC_DECINFO_WIDTH_CAND_A > `RVC_DECINFO_WIDTH_CAND_B ? `RVC_DECINFO_WIDTH_CAND_A : `RVC_DECINFO_WIDTH_CAND_B)
 
 //==============================================================================
-// 五、流水线阶段控制信号宽度 (Phase 2 使用)
+// 五、多周期阶段宏 — 节拍计数器取值
+//==============================================================================
+`define RVC_STAGE_WIDTH    3         // 节拍计数器位宽
+`define RVC_STAGE_IF       3'd0      // IF  阶段: 取指
+`define RVC_STAGE_ID       3'd1      // ID  阶段: 译码 + 寄存器读
+`define RVC_STAGE_EX       3'd2      // EX  阶段: ALU + 分支判定
+`define RVC_STAGE_MEM      3'd3      // MEM 阶段: 数据存储器读写
+`define RVC_STAGE_WB       3'd4      // WB  阶段: 写回寄存器堆
+`define RVC_CYCLES_PER     `RVC_CFG_CYCLES_PER_INSTR  // 每条指令周期数
+
+//==============================================================================
+// 六、多周期流水寄存器打包宽度 (阶段间寄存器数据位宽)
+//==============================================================================
+// 这些宽度等于 IF→ID, ID→EX, EX→MEM, MEM→WB 的寄存器总位宽
+// 每个字段被拼接成一根总线存入流水寄存器
+
+// IF → ID: valid(1) + IR(32) + PC(32)                           = 65
+`define RVC_IF_ID_WIDTH      (1 + 32 + `RVC_PC_WIDTH)
+
+// ID → EX: valid(1) + dec_info(~100) + RS1(32) + RS2(32) + IMM(32) + PC(32) + IR(32)
+`define RVC_ID_EX_WIDTH      (1 + `RVC_DECINFO_WIDTH + 32 + 32 + 32 + `RVC_PC_WIDTH + 32)
+
+// EX → MEM: valid(1) + dec_info + ALU_RESULT(32) + STORE_DATA(32) + PC(32) + IR(32)
+`define RVC_EX_MEM_WIDTH     (1 + `RVC_DECINFO_WIDTH + 32 + 32 + `RVC_PC_WIDTH + 32)
+
+// MEM → WB: valid(1) + dec_info + ALU_RESULT(32) + MEM_RESULT(32) + PC(32)
+`define RVC_MEM_WB_WIDTH     (1 + `RVC_DECINFO_WIDTH + 32 + 32 + `RVC_PC_WIDTH)
+
+//==============================================================================
+// 七、流水线寄存器打包宽度 (Phase 2 使用)
 //==============================================================================
 // 这些宏定义了流水线寄存器打包后的信号宽度，Phase 1 中你不需要关心它们
 // 但定义了它们可以让你在 Phase 1 的代码中预留接口
@@ -350,7 +383,9 @@
 // `define RVC_MEM_WB_WIDTH (32 + 32 + `RVC_DECINFO_WIDTH)
 
 //==============================================================================
-// 六、固定常量
+// 八、固定常量
 //==============================================================================
 `define RVC_RESET_PC           32'h0000_0000   // 复位 PC
 `define RVC_NOP_INSTR          32'h00000013    // ADDI x0, x0, 0
+
+`endif

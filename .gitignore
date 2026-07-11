@@ -9,3 +9,8 @@ build/
 *.wdb
 *.log
 obj_dir/
+.tools/
+modelsim.ini
+transcript
+xsim.jou
+dfx_runtime.txt

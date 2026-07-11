@@ -1,0 +1,4 @@
+{
+  "flags": "-I src/rtl/core -I src/rtl/general -I src/rtl/mems -I src/tb",
+  "build": "src/filelist.f"
+}
