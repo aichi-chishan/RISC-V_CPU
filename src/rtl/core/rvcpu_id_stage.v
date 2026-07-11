@@ -26,7 +26,12 @@ module rvcpu_id_stage (
 
     assign i_ready = o_ready;
     assign o_valid = i_valid;
-    assign o_rs1 = rs1_en ? rs1_raw : 32'b0; // 减少数据线翻转，降低功耗
-    assign o_rs2 = rs2_en ? rs2_raw : 32'b0; // 减少数据线翻转，降低功耗
+    // WB 与 ID 可能在同一上升沿分别写、读同一寄存器。不同 FPGA RAM/寄存器堆
+    // 对“同址读写”的仿真语义可能不同，因此在接口处显式实现写优先旁路。
+    // 这既消除器件相关性，也避免消费者进入 ID/EX 时锁存到旧值。
+    wire rs1_wb_bypass = wb_we && (wb_wa != 5'd0) && (wb_wa == rs1_idx);
+    wire rs2_wb_bypass = wb_we && (wb_wa != 5'd0) && (wb_wa == rs2_idx);
+    assign o_rs1 = rs1_en ? (rs1_wb_bypass ? wb_wd : rs1_raw) : 32'b0;
+    assign o_rs2 = rs2_en ? (rs2_wb_bypass ? wb_wd : rs2_raw) : 32'b0;
     // imm 与 PC 已分别位于 dec_info 的公共字段中，不能再通过独立端口重复传递。
 endmodule
