@@ -44,7 +44,7 @@ module rvcpu_pipeline_tb;
         input [4:0] index; input [31:0] expected; input [8*36-1:0] name;
         reg [31:0] actual;
         begin
-            actual=u_dut.u_id_stage.u_regfile.rf[index];
+            actual=u_dut.u_core.u_id_stage.u_regfile.rf[index];
             if (actual !== expected) begin
                 $display("[FAIL] %-36s x%0d got=%08h expect=%08h",name,index,actual,expected);
                 failures=failures+1;
@@ -100,12 +100,12 @@ module rvcpu_pipeline_tb;
         expect_reg(9, 32'd53, "JAL PC+4 结果前推");
         expect_reg(11,32'd68, "JALR 链接地址");
         expect_reg(12,32'd69, "JALR 冲刷及依赖前推");
-        if (u_dut.load_stall_count !== 32'd1) begin
-            $display("[FAIL] Load-Use 停顿次数 got=%0d expect=1",u_dut.load_stall_count);
+        if (u_dut.u_core.load_stall_count !== 32'd1) begin
+            $display("[FAIL] Load-Use 停顿次数 got=%0d expect=1",u_dut.u_core.load_stall_count);
             failures=failures+1;
         end else $display("[PASS] Load-Use 精确停顿一拍");
-        if (u_dut.branch_mispredict_count !== 32'd3) begin
-            $display("[FAIL] 预测失败次数 got=%0d expect=3",u_dut.branch_mispredict_count);
+        if (u_dut.u_core.branch_mispredict_count !== 32'd3) begin
+            $display("[FAIL] 预测失败次数 got=%0d expect=3",u_dut.u_core.branch_mispredict_count);
             failures=failures+1;
         end else $display("[PASS] BTFNT/JAL/JALR 预测纠错覆盖完整");
 

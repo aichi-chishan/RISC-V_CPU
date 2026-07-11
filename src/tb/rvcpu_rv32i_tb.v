@@ -114,7 +114,7 @@ module rvcpu_rv32i_tb;
         input [8*32-1:0] name;
         reg [31:0] actual;
         begin
-            actual = u_dut.u_id_stage.u_regfile.rf[index];
+            actual = u_dut.u_core.u_id_stage.u_regfile.rf[index];
             if (actual !== expected) begin
                 $display("[FAIL] %-32s x%0d: got=%08h expect=%08h", name, index, actual, expected);
                 failures = failures + 1;
@@ -330,7 +330,8 @@ module rvcpu_rv32i_tb;
     // 最后一条 SW 到 0x3fc 是测试结束协议。延迟 1ns 后检查，确保 DMEM
     // 的非阻塞写入已经在本时钟沿提交。
     always @(posedge clk) begin
-        if (rst_n && u_dut.dmem_wen && ({u_dut.dmem_addr, 2'b00} == 32'h0000_03fc)) begin
+        if (rst_n && u_dut.u_core.dmem_wen &&
+            ({u_dut.u_core.dmem_addr, 2'b00} == 32'h0000_03fc)) begin
             #1;
             run_checks;
             if (failures == 0)

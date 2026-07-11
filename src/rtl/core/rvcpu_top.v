@@ -11,11 +11,28 @@
 // 控制优先级严格规定为：复位 > 预测失败冲刷 > Load-Use 停顿 > 正常流动。
 // 这种写法避免多个控制源同时修改流水寄存器，也是工程中常用的可审计风格。
 //==============================================================================
-module rvcpu_top #(
-    parameter IMEM_INIT_FILE = ""
-) (
+module rvcpu_core (
     input  wire        clk,
     input  wire        rst_n,
+    // IFU 只读命令/响应通道，地址采用统一的 32 位字节地址。
+    output wire        ifu_cmd_valid,
+    input  wire        ifu_cmd_ready,
+    output wire [31:0] ifu_cmd_addr,
+    input  wire        ifu_rsp_valid,
+    output wire        ifu_rsp_ready,
+    input  wire [31:0] ifu_rsp_rdata,
+    input  wire        ifu_rsp_err,
+    // LSU 命令携带读写方向、写掩码和写数据，响应与命令相互解耦。
+    output wire        lsu_cmd_valid,
+    input  wire        lsu_cmd_ready,
+    output wire        lsu_cmd_read,
+    output wire [31:0] lsu_cmd_addr,
+    output wire [31:0] lsu_cmd_wdata,
+    output wire [3:0]  lsu_cmd_wmask,
+    input  wire        lsu_rsp_valid,
+    output wire        lsu_rsp_ready,
+    input  wire [31:0] lsu_rsp_rdata,
+    input  wire        lsu_rsp_err,
     output wire [31:0] debug_pc,
     output wire [2:0]  debug_stage,
     output wire        debug_wb_we,
@@ -28,8 +45,7 @@ module rvcpu_top #(
     // IF：组合读指令存储器，并用指令低成本预译码产生静态预测结果。
     // -------------------------------------------------------------------------
     reg  [31:0] pc;
-    wire [`RVC_IMEM_AW-1:0] imem_addr = pc[`RVC_IMEM_AW+1:2];
-    wire [31:0] if_instr;
+    wire [31:0] if_instr = ifu_rsp_rdata;
     wire [6:0] if_opcode = if_instr[6:0];
     wire if_is_branch = (if_opcode == 7'b1100011);
     wire if_is_jal    = (if_opcode == 7'b1101111);
@@ -107,11 +123,13 @@ module rvcpu_top #(
     // MEM/WB：数据存储器访问与最终写回。
     // -------------------------------------------------------------------------
     wire [`RVC_DMEM_AW-1:0] dmem_addr;
-    wire [31:0] dmem_wdata, dmem_rdata;
+    wire [31:0] dmem_wdata;
+    wire [31:0] dmem_rdata = lsu_rsp_rdata;
     wire [3:0] dmem_wmask;
     wire dmem_wen;
     wire led_sel = (ex_mem_alu_result == `RVC_LED_ADDR);
-    wire dmem_wen_to_ram = dmem_wen && !led_sel;
+    wire mem_is_lsu = ex_mem_dec_info[`RVC_DECINFO_GRP] == `RVC_DECINFO_GRP_LSU;
+    wire mem_is_store = mem_is_lsu && ex_mem_dec_info[`RVC_DECINFO_LSU_STORE];
     wire [`RVC_DECINFO_WIDTH-1:0] mem_dec_info;
     wire [31:0] mem_alu_result, mem_mem_result;
 
@@ -239,9 +257,21 @@ module rvcpu_top #(
         .i_alu_result(mem_wb_alu_result), .i_mem_result(mem_wb_mem_result),
         .wb_we(wb_we), .wb_wa(wb_wa), .wb_wd(wb_wd));
 
-    rvcpu_imem #(.INIT_FILE(IMEM_INIT_FILE)) u_imem(.addr(imem_addr), .rdata(if_instr));
-    rvcpu_dmem u_dmem(.clk(clk), .addr(dmem_addr), .wdata(dmem_wdata),
-        .wmask(dmem_wmask), .wen(dmem_wen_to_ram), .rdata(dmem_rdata));
+    // 本阶段先提供零等待 ICB 从设备契约，端口完整保留 valid/ready 和 err。
+    // 下一步加入取指队列和 LSU outstanding 状态机时，模块边界无需再次变化。
+    assign ifu_cmd_valid = 1'b1;
+    assign ifu_cmd_addr  = pc;
+    assign ifu_rsp_ready = 1'b1;
+    // Store 还必须通过 MEM 级的对齐检查；否则一个未对齐 Store 虽然不会拉高
+    // 原 dmem_wen，却可能被接口包装层误认为合法命令并产生总线副作用。
+    assign lsu_cmd_valid = ex_mem_valid && mem_is_lsu &&
+                           (!mem_is_store || dmem_wen) &&
+                           !(mem_is_store && led_sel);
+    assign lsu_cmd_read  = !mem_is_store;
+    assign lsu_cmd_addr  = ex_mem_alu_result;
+    assign lsu_cmd_wdata = dmem_wdata;
+    assign lsu_cmd_wmask = dmem_wmask;
+    assign lsu_rsp_ready = 1'b1;
 
     assign debug_pc = pc;
     // 三位分别表示 ID/EX、EX/MEM、MEM/WB 是否有效，比旧多周期阶段号更适合 ILA。
@@ -251,4 +281,57 @@ module rvcpu_top #(
     assign debug_wb_data = wb_wd;
     assign periph_led_we = dmem_wen && led_sel;
     assign periph_led_wdata = dmem_wdata;
+endmodule
+
+//==============================================================================
+// 兼容顶层：在 ICB 风格核心外连接零等待片内存储器。
+// FPGA 顶层和既有软件无需感知接口重构；以后接 AXI、缓存或总线矩阵时，
+// 可直接实例化 rvcpu_core 并替换本包装层，不必修改流水数据通路。
+//==============================================================================
+module rvcpu_top #(
+    parameter IMEM_INIT_FILE = ""
+) (
+    input wire clk, input wire rst_n,
+    output wire [31:0] debug_pc, output wire [2:0] debug_stage,
+    output wire debug_wb_we, output wire [4:0] debug_wb_rd,
+    output wire [31:0] debug_wb_data,
+    output wire periph_led_we, output wire [31:0] periph_led_wdata
+);
+    wire ifu_cmd_valid, ifu_cmd_ready, ifu_rsp_valid, ifu_rsp_ready;
+    wire [31:0] ifu_cmd_addr, ifu_rsp_rdata;
+    wire lsu_cmd_valid, lsu_cmd_ready, lsu_cmd_read;
+    wire [31:0] lsu_cmd_addr, lsu_cmd_wdata, lsu_rsp_rdata;
+    wire [3:0] lsu_cmd_wmask;
+    wire lsu_rsp_valid, lsu_rsp_ready;
+
+    // 零等待 ROM：命令握手的同一周期给出响应。只在边界处把字节地址
+    // 转换为存储宏所需的字地址，核心内部地址语义保持一致。
+    assign ifu_cmd_ready = 1'b1;
+    assign ifu_rsp_valid = ifu_cmd_valid && ifu_cmd_ready;
+    rvcpu_imem #(.INIT_FILE(IMEM_INIT_FILE)) u_imem(
+        .addr(ifu_cmd_addr[`RVC_IMEM_AW+1:2]), .rdata(ifu_rsp_rdata));
+
+    // 写副作用严格发生在 cmd_valid && cmd_ready 的握手周期。
+    assign lsu_cmd_ready = 1'b1;
+    assign lsu_rsp_valid = lsu_cmd_valid && lsu_cmd_ready;
+    rvcpu_dmem u_dmem(
+        .clk(clk), .addr(lsu_cmd_addr[`RVC_DMEM_AW+1:2]),
+        .wdata(lsu_cmd_wdata), .wmask(lsu_cmd_wmask),
+        .wen(lsu_cmd_valid && lsu_cmd_ready && !lsu_cmd_read),
+        .rdata(lsu_rsp_rdata));
+
+    rvcpu_core u_core(
+        .clk(clk), .rst_n(rst_n),
+        .ifu_cmd_valid(ifu_cmd_valid), .ifu_cmd_ready(ifu_cmd_ready),
+        .ifu_cmd_addr(ifu_cmd_addr), .ifu_rsp_valid(ifu_rsp_valid),
+        .ifu_rsp_ready(ifu_rsp_ready), .ifu_rsp_rdata(ifu_rsp_rdata), .ifu_rsp_err(1'b0),
+        .lsu_cmd_valid(lsu_cmd_valid), .lsu_cmd_ready(lsu_cmd_ready),
+        .lsu_cmd_read(lsu_cmd_read), .lsu_cmd_addr(lsu_cmd_addr),
+        .lsu_cmd_wdata(lsu_cmd_wdata), .lsu_cmd_wmask(lsu_cmd_wmask),
+        .lsu_rsp_valid(lsu_rsp_valid), .lsu_rsp_ready(lsu_rsp_ready),
+        .lsu_rsp_rdata(lsu_rsp_rdata), .lsu_rsp_err(1'b0),
+        .debug_pc(debug_pc), .debug_stage(debug_stage),
+        .debug_wb_we(debug_wb_we), .debug_wb_rd(debug_wb_rd),
+        .debug_wb_data(debug_wb_data), .periph_led_we(periph_led_we),
+        .periph_led_wdata(periph_led_wdata));
 endmodule

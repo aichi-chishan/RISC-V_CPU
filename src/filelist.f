@@ -17,3 +17,4 @@ src/rtl/fpga/rvcpu_fpga_top.v
 src/tb/rvcpu_tb.v
 src/tb/rvcpu_rv32i_tb.v
 src/tb/rvcpu_pipeline_tb.v
+src/tb/rvcpu_icb_tb.v

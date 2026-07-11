@@ -113,11 +113,11 @@ module rvcpu_tb;
                 end
                 `RVC_STAGE_MEM: begin
                     // MEM 阶段: 显示访存操作
-                    if (u_dut.dmem_wen)
+                    if (u_dut.u_core.dmem_wen)
                         $display("[t=%4t] MEM: STORE addr=%08h data=%08h",
                                  $time,
-                                 {u_dut.dmem_addr, 2'b00},  // 字地址→字节地址
-                                 u_dut.dmem_wdata);
+                                 {u_dut.u_core.dmem_addr, 2'b00},  // 字地址→字节地址
+                                 u_dut.u_core.dmem_wdata);
                     else
                         $display("[t=%4t] MEM: (no store)", $time);
                 end
@@ -140,8 +140,8 @@ module rvcpu_tb;
     // 8 条指令 × 5 周期 = 40 个周期后, MEM 阶段 (cycle 3) 写 DMEM
     // 第 8 条指令的 cycle 3 发生在大约第 8*5 + 3 = 43 个周期
     always @(posedge clk) begin
-        if (rst_n && u_dut.dmem_wen && u_dut.dmem_addr == 8'h40) begin
-            if (u_dut.dmem_wdata == 32'd1) begin
+        if (rst_n && u_dut.u_core.dmem_wen && u_dut.u_core.dmem_addr == 8'h40) begin
+            if (u_dut.u_core.dmem_wdata == 32'd1) begin
                 $display("");
                 $display("+==============================+");
                 $display("|        TEST PASSED !         |");
@@ -151,7 +151,7 @@ module rvcpu_tb;
                 $display("");
                 $display("+==============================+");
                 $display("|        TEST FAILED !         |");
-                $display("|  DMEM[0x100] = %d (expect 1)|", u_dut.dmem_wdata);
+                $display("|  DMEM[0x100] = %d (expect 1)|", u_dut.u_core.dmem_wdata);
                 $display("+==============================+");
                 $display("");
             end
