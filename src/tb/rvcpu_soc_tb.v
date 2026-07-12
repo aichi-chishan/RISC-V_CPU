@@ -33,8 +33,11 @@ module rvcpu_soc_tb;
     rvcpu_top u_dut(.clk(clk),.rst_n(rst_n),
         .irq_software(1'b0),.irq_timer(1'b0),.irq_external(1'b0),
         .uart_rx(uart_rx),
+        .pixel_clk(clk),
+        .pixel_rst_n(rst_n),
         .debug_pc(),.debug_stage(),.debug_wb_we(),.debug_wb_rd(),.debug_wb_data(),
-        .periph_led_we(),.periph_led_wdata(),.uart_tx(uart_tx));
+        .periph_led_we(),.periph_led_wdata(),.uart_tx(uart_tx),
+        .video_hsync(),.video_vsync(),.video_de(),.video_rgb());
     always #5 clk=~clk;
 
     always @(posedge clk) begin
@@ -70,7 +73,7 @@ module rvcpu_soc_tb;
         u_dut.u_imem.mem[16]=enc_i(200,0,3'b000,12,7'b0010011);
         u_dut.u_imem.mem[17]=enc_s(0,12,11,3'b010);
         u_dut.u_imem.mem[18]=enc_s(4,0,11,3'b010);
-        u_dut.u_imem.mem[19]=enc_u(20'h50000,13);         // 未映射地址
+        u_dut.u_imem.mem[19]=enc_u(20'h60000,13);         // 未映射地址（0x5000_0000 已为帧缓冲）
         u_dut.u_imem.mem[20]=enc_i(0,13,3'b010,14,7'b0000011);
         u_dut.u_imem.mem[21]=enc_i(7,0,3'b000,15,7'b0010011);
         u_dut.u_imem.mem[22]=enc_s(1020,15,0,3'b010);

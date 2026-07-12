@@ -73,6 +73,8 @@ module rvcpu_tb;
         .irq_timer     (1'b0),
         .irq_external  (1'b0),
         .uart_rx       (1'b1),
+        .pixel_clk     (clk),
+        .pixel_rst_n   (rst_n),
         .debug_pc      (debug_pc),
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),
@@ -80,7 +82,7 @@ module rvcpu_tb;
         .debug_wb_data (debug_wb_data),
         .periph_led_we(periph_led_we),
         .periph_led_wdata(periph_led_wdata),
-        .uart_tx       ()
+        .uart_tx       (),.video_hsync(),.video_vsync(),.video_de(),.video_rgb()
     );
 
     //==========================================================================

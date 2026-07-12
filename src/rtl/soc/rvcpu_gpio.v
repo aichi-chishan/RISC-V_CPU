@@ -31,7 +31,7 @@ module rvcpu_gpio #(
         case(addr[3:2])
             2'd0: rdata=out_reg;
             2'd1: rdata=oe_reg;
-            2'd2: rdata={{(32-WIDTH){1'b0}},gpio_in};
+            2'd2: begin rdata=32'b0; rdata[WIDTH-1:0]=gpio_in; end
             default: rdata=32'b0;
         endcase
     end

@@ -8,19 +8,25 @@
 // IMEM_INIT_FILE 应指向 Vivado 可访问的 .hex 文件，用于初始化指令 ROM。
 //==============================================================================
 module rvcpu_fpga_top #(
-    parameter IMEM_INIT_FILE = "src/riscv-tests/led_flow.hex"
+    parameter IMEM_INIT_FILE = "gpu_demo.hex"
 ) (
     input  wire        sys_clk,
     input  wire        reset_n,
     input  wire        uart_rx,
     output wire [1:0]  led,
-    output wire        uart_tx
+    output wire        uart_tx,
+    output wire        tmds_clk_p, output wire tmds_clk_n,
+    output wire [2:0]  tmds_data_p, output wire [2:0] tmds_data_n
 );
     // 异步复位同步释放：防止复位撤销边沿多个触发器进入不一致状态
     (* ASYNC_REG = "TRUE" *) reg [1:0] reset_sync;
     reg [1:0] led_reg;
     wire core_led_we;
     wire [31:0] core_led_wdata;
+    wire pixel_clk,pixel_clk_5x,hdmi_locked;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] pixel_reset_sync;
+    wire video_hsync,video_vsync,video_de;
+    wire [23:0] video_rgb;
 
     // 调试信号不再作为 FPGA 顶层端口占用物理引脚；需要波形时可在 Vivado
     // "Set Up Debug" 中把这些已标记网络接入 ILA。
@@ -48,6 +54,15 @@ module rvcpu_fpga_top #(
 
     assign led = led_reg;
 
+    rvcpu_hdmi_clocking u_hdmi_clocking(.sys_clk(sys_clk),.reset(!reset_sync[1]),
+        .pixel_clk(pixel_clk),.pixel_clk_5x(pixel_clk_5x),.locked(hdmi_locked));
+    // 像素域复位独立执行异步置位、同步释放，不能直接使用系统时钟域复位尾拍。
+    always @(posedge pixel_clk or negedge reset_n) begin
+        if(!reset_n) pixel_reset_sync<=2'b00;
+        else if(!hdmi_locked) pixel_reset_sync<=2'b00;
+        else pixel_reset_sync<={pixel_reset_sync[0],1'b1};
+    end
+
     rvcpu_top #(.IMEM_INIT_FILE(IMEM_INIT_FILE)) u_core (
         .clk           (sys_clk),
         .rst_n         (reset_sync[1]),
@@ -55,6 +70,8 @@ module rvcpu_fpga_top #(
         .irq_timer     (1'b0),
         .irq_external  (1'b0),
         .uart_rx       (uart_rx),
+        .pixel_clk     (pixel_clk),
+        .pixel_rst_n   (pixel_reset_sync[1]),
         .debug_pc      (debug_pc),
         .debug_stage   (debug_stage),
         .debug_wb_we   (debug_wb_we),
@@ -62,6 +79,13 @@ module rvcpu_fpga_top #(
         .debug_wb_data (debug_wb_data),
         .periph_led_we (core_led_we),
         .periph_led_wdata(core_led_wdata),
-        .uart_tx       (uart_tx)
+        .uart_tx       (uart_tx),
+        .video_hsync   (video_hsync),.video_vsync(video_vsync),
+        .video_de      (video_de),.video_rgb(video_rgb)
     );
+
+    rvcpu_hdmi_tx u_hdmi_tx(.pixel_clk(pixel_clk),.pixel_clk_5x(pixel_clk_5x),
+        .reset(!pixel_reset_sync[1]),.rgb(video_rgb),.hsync(video_hsync),
+        .vsync(video_vsync),.de(video_de),.tmds_clk_p(tmds_clk_p),
+        .tmds_clk_n(tmds_clk_n),.tmds_data_p(tmds_data_p),.tmds_data_n(tmds_data_n));
 endmodule

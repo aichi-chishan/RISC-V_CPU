@@ -37,8 +37,11 @@ module rvcpu_trap_tb;
     rvcpu_top u_dut(.clk(clk),.rst_n(rst_n),
         .irq_software(irq_software),.irq_timer(irq_timer),.irq_external(irq_external),
         .uart_rx(1'b1),
+        .pixel_clk(clk),
+        .pixel_rst_n(rst_n),
         .debug_pc(),.debug_stage(),.debug_wb_we(),.debug_wb_rd(),.debug_wb_data(),
-        .periph_led_we(),.periph_led_wdata(),.uart_tx());
+        .periph_led_we(),.periph_led_wdata(),.uart_tx(),
+        .video_hsync(),.video_vsync(),.video_de(),.video_rgb());
     always #5 clk=~clk;
 
     // 在 CSR 文件真正提交 trap 的同一个边界采样原因。计数而非只看最终 mcause，

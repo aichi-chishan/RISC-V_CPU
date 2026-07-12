@@ -18,7 +18,12 @@ src/rtl/mems/rvcpu_dmem.v
 src/rtl/soc/rvcpu_gpio.v
 src/rtl/soc/rvcpu_uart.v
 src/rtl/soc/rvcpu_clint.v
+src/rtl/video/rvcpu_gpu.v
+src/rtl/video/rvcpu_tmds_encoder.v
 src/rtl/fpga/rvcpu_fpga_top.v
+src/rtl/fpga/rvcpu_hdmi_clocking.v
+src/rtl/fpga/rvcpu_hdmi_serializer.v
+src/rtl/fpga/rvcpu_hdmi_tx.v
 src/tb/rvcpu_tb.v
 src/tb/rvcpu_rv32i_tb.v
 src/tb/rvcpu_pipeline_tb.v
@@ -26,3 +31,5 @@ src/tb/rvcpu_icb_tb.v
 src/tb/rvcpu_trap_tb.v
 src/tb/rvcpu_soc_tb.v
 src/tb/rvcpu_rv32m_tb.v
+src/tb/rvcpu_gpu_tb.v
+src/tb/rvcpu_gpu_cpu_tb.v

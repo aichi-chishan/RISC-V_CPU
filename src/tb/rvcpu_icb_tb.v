@@ -25,8 +25,11 @@ module rvcpu_icb_tb;
     rvcpu_top u_dut(.clk(clk),.rst_n(rst_n),.debug_pc(),.debug_stage(),
         .irq_software(1'b0),.irq_timer(1'b0),.irq_external(1'b0),
         .uart_rx(1'b1),
+        .pixel_clk(clk),
+        .pixel_rst_n(rst_n),
         .debug_wb_we(),.debug_wb_rd(),.debug_wb_data(),
-        .periph_led_we(),.periph_led_wdata(),.uart_tx());
+        .periph_led_we(),.periph_led_wdata(),.uart_tx(),
+        .video_hsync(),.video_vsync(),.video_de(),.video_rgb());
     always #5 clk=~clk;
 
     always @(posedge clk) begin

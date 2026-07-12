@@ -430,11 +430,15 @@ module rvcpu_top #(
     input wire clk, input wire rst_n,
     input wire irq_software, input wire irq_timer, input wire irq_external,
     input wire uart_rx,
+    input wire pixel_clk,
+    input wire pixel_rst_n,
     output wire [31:0] debug_pc, output wire [2:0] debug_stage,
     output wire debug_wb_we, output wire [4:0] debug_wb_rd,
     output wire [31:0] debug_wb_data,
     output wire periph_led_we, output wire [31:0] periph_led_wdata,
-    output wire uart_tx
+    output wire uart_tx,
+    output wire video_hsync, output wire video_vsync, output wire video_de,
+    output wire [23:0] video_rgb
 );
     wire ifu_cmd_valid, ifu_cmd_ready, ifu_rsp_valid, ifu_rsp_ready;
     wire [31:0] ifu_cmd_addr, ifu_rsp_rdata;
@@ -445,16 +449,21 @@ module rvcpu_top #(
     localparam [31:0] GPIO_BASE  = 32'h4000_0000;
     localparam [31:0] UART_BASE  = 32'h4000_1000;
     localparam [31:0] CLINT_BASE = 32'h0200_0000;
+    localparam [31:0] GPU_REG_BASE = 32'h4000_2000;
+    localparam [31:0] GPU_FB_BASE  = 32'h5000_0000;
     wire ram_sel   = lsu_cmd_addr < (`RVC_DMEM_DEPTH * 4);
     wire gpio_sel  = (lsu_cmd_addr[31:12] == GPIO_BASE[31:12]);
     wire uart_sel  = (lsu_cmd_addr[31:12] == UART_BASE[31:12]);
     wire clint_sel = (lsu_cmd_addr[31:16] == CLINT_BASE[31:16]);
-    wire mapped_sel = ram_sel || gpio_sel || uart_sel || clint_sel;
+    wire gpu_reg_sel=(lsu_cmd_addr[31:12]==GPU_REG_BASE[31:12]);
+    wire gpu_fb_sel=(lsu_cmd_addr>=GPU_FB_BASE)&&(lsu_cmd_addr<32'h5002_5800);
+    wire mapped_sel = ram_sel || gpio_sel || uart_sel || clint_sel || gpu_reg_sel || gpu_fb_sel;
     wire bus_write = lsu_cmd_valid && lsu_cmd_ready && !lsu_cmd_read;
-    wire [31:0] ram_rdata, gpio_rdata, uart_rdata, clint_rdata;
+    wire [31:0] ram_rdata, gpio_rdata, uart_rdata, clint_rdata,gpu_rdata;
     wire [31:0] gpio_out, gpio_oe;
     wire gpio_write_pulse;
     wire clint_irq_software, clint_irq_timer;
+    wire gpu_irq_vblank;
 
     // 零等待 ROM：命令握手的同一周期给出响应。只在边界处把字节地址
     // 转换为存储宏所需的字地址，核心内部地址语义保持一致。
@@ -467,7 +476,8 @@ module rvcpu_top #(
     assign lsu_cmd_ready = 1'b1;
     assign lsu_rsp_valid = lsu_cmd_valid && lsu_cmd_ready;
     assign lsu_rsp_rdata = ram_sel ? ram_rdata : gpio_sel ? gpio_rdata :
-                           uart_sel ? uart_rdata : clint_sel ? clint_rdata : 32'b0;
+                           uart_sel ? uart_rdata : clint_sel ? clint_rdata :
+                           (gpu_reg_sel||gpu_fb_sel)?gpu_rdata:32'b0;
     rvcpu_dmem u_dmem(
         .clk(clk), .addr(lsu_cmd_addr[`RVC_DMEM_AW+1:2]),
         .wdata(lsu_cmd_wdata), .wmask(lsu_cmd_wmask),
@@ -488,6 +498,14 @@ module rvcpu_top #(
         .write(bus_write),.addr(lsu_cmd_addr[15:0]),.wdata(lsu_cmd_wdata),
         .wmask(lsu_cmd_wmask),.rdata(clint_rdata),
         .irq_software(clint_irq_software),.irq_timer(clint_irq_timer));
+    rvcpu_gpu u_gpu(
+        .bus_clk(clk),.bus_rst_n(rst_n),.bus_valid(lsu_cmd_valid&&(gpu_reg_sel||gpu_fb_sel)),
+        .bus_write(bus_write),.is_reg(gpu_reg_sel),.is_fb(gpu_fb_sel),
+        .bus_addr(lsu_cmd_addr),.bus_wdata(lsu_cmd_wdata),.bus_wmask(lsu_cmd_wmask),
+        .bus_rdata(gpu_rdata),.irq_vblank(gpu_irq_vblank),
+        .pixel_clk(pixel_clk),.pixel_rst_n(pixel_rst_n),.video_hsync(video_hsync),
+        .video_vsync(video_vsync),.video_de(video_de),.video_rgb(video_rgb),
+        .debug_x(),.debug_y());
 
     assign periph_led_we = gpio_write_pulse;
     assign periph_led_wdata = gpio_out;
@@ -495,7 +513,8 @@ module rvcpu_top #(
     rvcpu_core u_core(
         .clk(clk), .rst_n(rst_n),
         .irq_software(irq_software | clint_irq_software),
-        .irq_timer(irq_timer | clint_irq_timer), .irq_external(irq_external),
+        .irq_timer(irq_timer | clint_irq_timer),
+        .irq_external(irq_external | gpu_irq_vblank),
         .ifu_cmd_valid(ifu_cmd_valid), .ifu_cmd_ready(ifu_cmd_ready),
         .ifu_cmd_addr(ifu_cmd_addr), .ifu_rsp_valid(ifu_rsp_valid),
         .ifu_rsp_ready(ifu_rsp_ready), .ifu_rsp_rdata(ifu_rsp_rdata), .ifu_rsp_err(1'b0),

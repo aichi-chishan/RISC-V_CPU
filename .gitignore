@@ -2,8 +2,8 @@ xelab.pb
 xvlog.pb
 xsim.dir
 .vscode
-vivado
 build/
+work/
 *.vcd
 *.vvp
 *.wdb
@@ -13,4 +13,12 @@ obj_dir/
 modelsim.ini
 transcript
 xsim.jou
+vivado*.jou
+vivado/*.cache/
+vivado/*.hw/
+vivado/*.ip_user_files/
+vivado/*.runs/
+vivado/*.sim/
+vivado/*.srcs/
+vivado/*.xpr
 dfx_runtime.txt
